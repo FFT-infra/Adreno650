@@ -94,7 +94,11 @@ volatile uint32_t native_adreno_open_log_count;
 struct NativeAdrenoClientRecord {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
 struct NativeAdrenoClientRecord native_adreno_client_log[8];
 /* The last text line (the plugin's failure reason) each process other than the render server streamed: process name and a 64-byte line. */
-struct NativeAdrenoClientText {char name[20]; char text[64];};
+/* Two lines per process, not one: the plugin writes its known-image self-test result right after a
+ * device is made, and the process's own first-problem line is written from the same place, so with a
+ * single row the later line erased the self-test (u250/u251: no selftest line in [gpu client text]).
+ * Lines alternate between the two rows; a third overwrites the first. */
+struct NativeAdrenoClientText {char name[20]; char text[2][64]; uint32_t lines;};
 struct NativeAdrenoClientText native_adreno_client_text[4];
 /* Why the latest mount of a connection failed: [0] 1 no free slot, 2 the core's open, 3 the window scope; [1] its IOReturn; [2] the slot; [3] failures so far. */
 volatile uint32_t native_adreno_mount_fail[4];
@@ -603,8 +607,8 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
                 proc_selfname(who,sizeof who);
                 if(value==0x7fff && strncmp(who,"backboardd",sizeof who)) {
                     for(auto &entry:native_adreno_client_text) {
-                        if(!entry.name[0]) strlcpy(entry.name,who,sizeof entry.name);
-                        if(!strncmp(entry.name,who,sizeof entry.name)) {line=entry.text;break;}
+                        if(!entry.name[0]) {strlcpy(entry.name,who,sizeof entry.name);entry.lines=0;}
+                        if(!strncmp(entry.name,who,sizeof entry.name)) {line=entry.text[entry.lines&1u];entry.lines=entry.lines+1;break;}
                     }
                 }
                 memset(line,0,sizeof(native_adreno_metal_diag.report2));length=0;
