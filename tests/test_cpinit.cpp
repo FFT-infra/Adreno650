@@ -90,5 +90,44 @@ int main()
         CHECK(init.run(&io,&ring,&config,&fence)==kIOReturnIOError && init.poisoned());
         CHECK(ring.poisoned() && ring.detach()==kIOReturnBusy);
     }
+    /* An A6xx core runs a6xx_cp_init(): one CP_ME_INIT of eight dwords, no CP_THREAD_CONTROL, no power-up register list. */
+    {
+        reset();NativeAdrenoRing ring;
+        CHECK(ring.setGeneration(6)==kIOReturnSuccess);
+        CHECK(ring.attach(&io,&cache,ringmem,sizeof(ringmem),0x100000,fencemem,sizeof(fencemem),0x108000)==kIOReturnSuccess);
+        NativeAdrenoCpInit init;
+        /* No list: a6xx_cp_init() reads none, so pwrup_reglist_iova is 0 and still accepted. */
+        NativeAdrenoCpInitConfig config{0x200000,0,0,6};
+        uint32_t fence=0;
+        CHECK(init.run(&io,&ring,&config,&fence)==kIOReturnSuccess && fence==1 && init.completed());
+        /* The ring's attach() programmed seven registers first; run() then writes CP_SQE_INSTR_BASE (0x0830/0x0831) before
+         * the packet, as a6xx hw_init does. */
+        CHECK(peer.writes.size()>=9 && peer.writes[7]==0x0830 && peer.writes[8]==0x0831);
+        /* CP_ME_INIT (0x48) with eight dwords is 0x70480008; the words are Linux's 0x2f, 3, 0x20000000, then zeros. */
+        /* Type7 header for opcode 0x48 with eight dwords: count 8, opcode in bits 22:16, and the odd-opcode bit 23
+         * set because 0x48 is even, so 0x70c80008. */
+        CHECK(ringmem[0]==0x70c80008u);
+        CHECK(ringmem[1]==0x0000002fu);   /* Linux's mask: multiple hardware contexts, error detection */
+        CHECK(ringmem[2]==0x00000003u);   /* three hardware contexts */
+        CHECK(ringmem[3]==0x20000000u);   /* error detection, no header dump */
+        CHECK(ringmem[4]==0u && ringmem[5]==0u && ringmem[6]==0u && ringmem[7]==0u && ringmem[8]==0u);
+        /* No CP_THREAD_CONTROL (0x17) anywhere: an A6xx core has one thread. */
+        for(unsigned i=0;i<16;++i)CHECK(!(ringmem[i]&0x70000000u) || ((ringmem[i]>>16)&0x7f)!=0x17u);
+        /* The CP init submission is still outstanding, so detach refuses (kIOReturnBusy), as for any committed job. */
+        CHECK(ring.detach()==kIOReturnBusy);
+    }
+    /* An A6xx core without a power-up list is accepted; a 7th generation one without it is refused. */
+    {
+        reset();NativeAdrenoRing ring;CHECK(ring.attach(&io,&cache,ringmem,sizeof(ringmem),0x100000,fencemem,sizeof(fencemem),0x108000)==kIOReturnSuccess);
+        NativeAdrenoCpInit init;uint32_t fence=0;
+        NativeAdrenoCpInitConfig no_list{0x200000,0,0,0};
+        CHECK(init.run(&io,&ring,&no_list,&fence)==kIOReturnBadArgument);
+        /* And a generation outside {0,6,7} is refused before any register is touched. */
+        reset();NativeAdrenoRing ring2;CHECK(ring2.attach(&io,&cache,ringmem,sizeof(ringmem),0x100000,fencemem,sizeof(fencemem),0x108000)==kIOReturnSuccess);
+        const size_t writes_before=peer.writes.size();
+        NativeAdrenoCpInit init2;NativeAdrenoCpInitConfig bad{0x200000,0x300000,0,5};
+        CHECK(init2.run(&io,&ring2,&bad,&fence)==kIOReturnBadArgument && peer.writes.size()==writes_before);
+    }
     std::printf("PASS: 1 exact CP_ME_INIT sequence with SQE base, 8 pre-MMIO refusals, 1 SQE write failure and 1 ring commit failure over a software CP register peer\n");
+    std::printf("PASS: A6xx CP init sends one 8-dword CP_ME_INIT with no thread control and no power-up list\n");
 }

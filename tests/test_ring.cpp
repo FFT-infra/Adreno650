@@ -275,4 +275,43 @@ int main()
         std::printf("PASS: 1 exact ring programming and submission, 1 wrap submission, 1 refused re-attach, 7 write/1 read attach failures and 4 post-commit poison cases over a software CP register peer (%u failure cases)\n",
             cases);
     }
+    /* An A6xx ring programs CP_RB_CNTL with NO_UPDATE and submits the a6xx_submit() prologue and fence. */
+    {
+        reset();NativeAdrenoRing r;
+        CHECK(r.setGeneration(6)==kIOReturnSuccess && r.generation()==6);
+        CHECK(attach(r)==kIOReturnSuccess);
+        /* Same register order as A7XX; CP_RB_CNTL (0x0802) carries NO_UPDATE (bit 27) as a6xx_hw_init writes it. */
+        const uint32_t expected[][2]={
+            {0x0800,0x100000},{0x0801,0},{0x0802,(12u)|(2u<<8)|(1u<<27)},
+            {0x0804,0x108000},{0x0805,0},{0x0807,0},{0x0885,0}};
+        CHECK(peer.writes.size()==sizeof(expected)/sizeof(expected[0]));
+        for(size_t i=0;i<peer.writes.size();++i)
+            CHECK(peer.writes[i].first==expected[i][0] && peer.writes[i].second==expected[i][1]);
+        /* A framed submission: six prologue words (UCHE invalidate, CCU depth, CCU color), the payload, then the plain fence. */
+        const uint32_t words[4]={0x11111111,0x22222222,0x33333333,0x44444444};
+        uint32_t end=0;
+        CHECK(r.submitFramed(words,4,&end)==kIOReturnSuccess);
+        /* Three CP_EVENT_WRITE (0x46) packets of one dword, two words each: the six-word prologue. 0x31, 0x18 and 0x19 are
+         * the event values in the payload, not opcodes; the header is Type7 with count 1. */
+        CHECK(ring[0]==0x70460001u && ring[1]==0x31);    /* CACHE_INVALIDATE (UCHE) */
+        CHECK(ring[2]==0x70460001u && ring[3]==0x18);    /* PC_CCU_INVALIDATE_DEPTH */
+        CHECK(ring[4]==0x70460001u && ring[5]==0x19);    /* PC_CCU_INVALIDATE_COLOR */
+        CHECK(ring[6]==0x11111111u && ring[9]==0x44444444u);
+        /* The fence is emitFence(), not the A7XX BV-thread form: CP_SCRATCH(2) = seqno (a Type4 write), then one
+         * CP_EVENT_WRITE of four dwords whose event is CACHE_FLUSH_TS (0x04) with IRQ (bit 31), its address and the seqno. */
+        CHECK(ring[10]==0x48088501u && ring[11]==1u);
+        CHECK(ring[12]==0x70460004u && ring[13]==(0x04u|(1u<<31)));
+        CHECK(ring[14]==0x00108004u && ring[15]==0u && ring[16]==1u);
+        /* submitFramed's third argument is the fence number it assigned, and the submission is outstanding until it retires. */
+        CHECK(end==1 && r.outstanding()==1);
+    }
+    /* The generation is refused once attached, and anything but 6 or 7 is refused. */
+    {
+        reset();NativeAdrenoRing r;
+        CHECK(r.setGeneration(5)==kIOReturnBadArgument);
+        CHECK(r.setGeneration(7)==kIOReturnSuccess && r.generation()==7);
+        CHECK(attach(r)==kIOReturnSuccess);
+        CHECK(r.setGeneration(6)==kIOReturnBusy && r.generation()==7);
+        std::printf("PASS: A6xx ring takes NO_UPDATE in CP_RB_CNTL, the six-word a6xx_submit() prologue and the CACHE_FLUSH_TS fence\n");
+    }
 }

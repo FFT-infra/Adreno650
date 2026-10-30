@@ -50,6 +50,17 @@ static constexpr uint32_t kKnown = IrqBitIdle | IrqBitAhb | IrqBitAtbAsync | Irq
 static constexpr uint32_t kEnable = IrqBitAhb | IrqBitAtbAsync | IrqBitGpc | IrqBitCpSw |
     IrqBitCpHw | IrqBitCpPm4 | IrqBitCpRbDone | IrqBitCpFence | IrqBitAtbBus |
     IrqBitHang | IrqBitUcheOob | IrqBitUcheTrap | IrqBitTsbWrite | IrqBitFuse;
+/* A6XX_INT_MASK, from a6xx_gpu.c's definition of the same name, whose eleven terms are
+ * A6XX_RBBM_INT_0_MASK_CP_AHB_ERROR (0x2), _RBBM_ATB_ASYNCFIFO_OVERFLOW (0x40),
+ * _CP_HW_ERROR (0x200), _CP_IB2 (0x2000), _CP_IB1 (0x4000), _CP_RB (0x8000),
+ * _CP_CACHE_FLUSH_TS (0x100000), _RBBM_ATB_BUS_OVERFLOW (0x400000),
+ * _RBBM_HANG_DETECT (0x800000), _UCHE_OOB_ACCESS (0x1000000) and _UCHE_TRAP_INTR
+ * (0x2000000) in a6xx.xml.h. Their sum is 0x03d0e242, which the host test pins.
+ * CP_RB (A6xx) is the bit A7XX names CP_PM4: same position, and Linux enables it
+ * on both cores. */
+static constexpr uint32_t kEnableA6xx = IrqBitAhb | IrqBitAtbAsync | IrqBitCpHw | IrqBitCpIb2 |
+    IrqBitCpIb1 | IrqBitCpPm4 | IrqBitCpFence | IrqBitAtbBus | IrqBitHang | IrqBitUcheOob |
+    IrqBitUcheTrap;
 /* CP_INTERRUPT_STATUS error bits, including the A7XX LPAC/BV replicas. */
 static constexpr uint32_t kCpErrors = 0x3fff7u;
 IOReturn NativeAdrenoIrq::poison()
@@ -59,6 +70,10 @@ IOReturn NativeAdrenoIrq::poison()
 uint32_t NativeAdrenoIrq::mask()
 {
     return kEnable;
+}
+uint32_t NativeAdrenoIrq::maskA6xx()
+{
+    return kEnableA6xx;
 }
 uint32_t NativeAdrenoIrq::cpErrorMask()
 {
@@ -78,12 +93,17 @@ IOReturn NativeAdrenoIrq::detach()
 }
 IOReturn NativeAdrenoIrq::programMask(uint32_t *programmed)
 {
+    return programMask(programmed,false);
+}
+IOReturn NativeAdrenoIrq::programMask(uint32_t *programmed,bool a6xx)
+{
     if(!attached_ || poisoned_)return kIOReturnNotReady;
     if(programmed)*programmed=0;
+    const uint32_t enable=a6xx?kEnableA6xx:kEnable;
     uint32_t readback=0;
-    if(io_.write32(io_.cookie,IrqRbbmMask,kEnable))return poison();
+    if(io_.write32(io_.cookie,IrqRbbmMask,enable))return poison();
     if(io_.read32(io_.cookie,IrqRbbmMask,&readback))return poison();
-    if(readback!=kEnable)return poison();
+    if(readback!=enable)return poison();
     enabled_=readback;
     if(programmed)*programmed=readback;
     return kIOReturnSuccess;

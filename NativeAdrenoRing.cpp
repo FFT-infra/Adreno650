@@ -83,7 +83,18 @@ enum : uint32_t {
     RingPseudoWords = 13,
     RingContextSwitchYield = 0x6b,
     RingYieldWords = 5,
-    RingBvFenceOffset = 12    /* msm_rbmemptrs.bv_fence; +8 is bv_rptr, the BV RPTR shadow hw init programs */
+    RingBvFenceOffset = 12,   /* msm_rbmemptrs.bv_fence; +8 is bv_rptr, the BV RPTR shadow hw init programs */
+    /* A6xx forms, from a6xx_gpu.c's a6xx_submit() and a6xx_hw_init(). An A6xx core has one CP thread and one page table, so a
+     * submission carries no thread selection and no context entry; what it does carry is the UCHE invalidate a6xx_set_pagetable()
+     * ends with and the two CCU invalidates a6xx_submit() puts before the IBs. Its fence is CP_SCRATCH(2) then a CP_EVENT_WRITE
+     * with CACHE_FLUSH_TS (event 0x04, not A7XX's 0x31) and the IRQ bit. CP_RB_CNTL takes NO_UPDATE (bit 27) because without APRIV
+     * the CP may not write the RPTR shadow (a6xx_hw_init). */
+    RingA6xxCacheFlushTs = 0x04,
+    RingA6xxCcuInvalidateDepth = 0x18,
+    RingA6xxCcuInvalidateColor = 0x19,
+    RingA6xxCacheInvalidate = 0x31,
+    RingA6xxPrologueWords = 6,
+    RingNoUpdate = 1u << 27
 };
 static uint32_t ilog2(size_t value)
 {
@@ -196,8 +207,24 @@ static size_t stamp(uint32_t *words,size_t at,uint64_t fence_iova,uint32_t seqno
  * requestContextReset() also carries the context entry a6xx_set_pagetable() emits when a new context first submits.
  * Every prologue ends its BR-only part with the GPU cache flush and invalidate described at RingCacheFlush7. */
 /* `number` is the fence this submission ends with: the start stamp goes to that fence's slot, which is not seqno_+1 once the two rings share one numbering. */
+/* a6xx_submit()'s prologue: an A6xx core has one CP thread and one page table, so there is no thread selection and no context entry.
+ * What it sends is the UCHE invalidate a6xx_set_pagetable() ends with (CACHE_INVALIDATE 0x31) and the two CCU invalidates
+ * a6xx_submit() puts before the IBs (PC_CCU_INVALIDATE_DEPTH 0x18, _COLOR 0x19), each as its own CP_EVENT_WRITE. Six words. */
+IOReturn NativeAdrenoRing::emitA6xxPrologue(uint32_t at,uint32_t *end)
+{
+    const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
+    uint32_t words[RingA6xxPrologueWords]={0};
+    const uint32_t uche=RingA6xxCacheInvalidate,depth=RingA6xxCcuInvalidateDepth,color=RingA6xxCcuInvalidateColor;
+    size_t n=packet(words,0,RingFenceOpcode,&uche,1);
+    if(n)n=packet(words,n,RingFenceOpcode,&depth,1);
+    if(n)n=packet(words,n,RingFenceOpcode,&color,1);
+    if(n!=RingA6xxPrologueWords)return poison();
+    for(uint32_t i=0;i<RingA6xxPrologueWords;++i)ring_[(at+i)&mask]=words[i];
+    *end=(at+RingA6xxPrologueWords)&mask;return kIOReturnSuccess;
+}
 IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,bool table,uint32_t *end,uint32_t number)
 {
+    if(generation_==6)return emitA6xxPrologue(at,end);
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingPrologueWords+RingResetWords+RingTableWords+RingStampWords+RingPseudoWords]={0};
     const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,both=RingThreadBoth,marker=0x101;
@@ -248,7 +275,9 @@ IOReturn NativeAdrenoRing::emitFence(uint32_t at,uint32_t seqno,uint32_t *end)
     if(AdrenoPM4Type4(RingScratch,1,&words[0])!=AdrenoPM4Success ||
         AdrenoPM4Type7(RingFenceOpcode,4,&words[2])!=AdrenoPM4Success)return poison();
     words[1]=seqno;
-    words[3]=RingFenceEvent|RingFenceEnable|RingFenceIrq;
+    /* A6xx flushes through CACHE_FLUSH_TS (event 0x04) with the IRQ bit, as a6xx_submit() does; A7XX names event 0x31 CACHE_CLEAN
+     * and needs its own enable bit. Same position, different packet. */
+    words[3]=generation_==6?RingA6xxCacheFlushTs|RingFenceIrq:RingFenceEvent|RingFenceEnable|RingFenceIrq;
     /* The timestamp goes to +4 (msm_rbmemptrs.fence), where wait() reads it; +0 is the CP's RPTR shadow. */
     const uint64_t at4=fence_iova_+4;
     words[4]=(uint32_t)at4;words[5]=(uint32_t)(at4>>32);words[6]=seqno;
@@ -263,6 +292,8 @@ IOReturn NativeAdrenoRing::emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *
 }
 IOReturn NativeAdrenoRing::emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *end,bool yield)
 {
+    /* a6xx_submit() has no BV thread: its submission ends with CP_SCRATCH(2) and one CACHE_FLUSH_TS, which is emitFence(). */
+    if(generation_==6)return emitFence(at,seqno,end);
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingFramedFenceWords+RingStampWords+RingYieldWords]={0};
     const uint32_t total=RingFramedFenceWords+(stamps_?RingStampWords:0)+(yield?RingYieldWords:0);
@@ -293,6 +324,12 @@ IOReturn NativeAdrenoRing::emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *
     if(n!=total)return poison();
     for(uint32_t i=0;i<total;++i)ring_[(at+i)&mask]=words[i];
     *end=(at+total)&mask;return kIOReturnSuccess;
+}
+IOReturn NativeAdrenoRing::setGeneration(unsigned generation)
+{
+    if(attached_)return kIOReturnBusy;
+    if(generation!=6 && generation!=7)return kIOReturnBadArgument;
+    generation_=generation;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoRing::attach(const NativeAdrenoRingIo *io,const NativeAdrenoRingCache *cache,
     void *ring,size_t ring_bytes,uint64_t ring_iova,void *fence,size_t fence_bytes,uint64_t fence_iova)
@@ -364,7 +401,9 @@ IOReturn NativeAdrenoRing::restoreWptr()
 /* CP_RB_BASE, CP_RB_CNTL, CP_RB_RPTR_ADDR, WPTR 0 and CP_SCRATCH(2), then the read pointer the CP reports. */
 IOReturn NativeAdrenoRing::program()
 {
-    const uint32_t control=control_?control_:(uint32_t)(ilog2(ring_bytes_/8)&0x3f)|(ilog2(RingBlockBytes/8)<<8);
+    /* A6xx sets NO_UPDATE (bit 27): without CP_APRIV the CP may not write the RPTR shadow (a6xx_hw_init). A7XX does not need it,
+     * because that ring's prologue keeps the shadow in step by other means. */
+    const uint32_t control=control_?control_:(uint32_t)(ilog2(ring_bytes_/8)&0x3f)|(ilog2(RingBlockBytes/8)<<8)|(generation_==6?RingNoUpdate:0);
     const uint32_t base_lo=(uint32_t)ring_iova_,base_hi=(uint32_t)(ring_iova_>>32);
     const uint32_t rptr_lo=(uint32_t)fence_iova_,rptr_hi=(uint32_t)(fence_iova_>>32);
     const uint32_t writes[]={RingBase,base_lo,RingBase+1,base_hi,RingControl,control,
@@ -522,8 +561,10 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     if(!words || !word_count || word_count>SIZE_MAX/sizeof(uint32_t))return kIOReturnBadArgument;
     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
     const bool reset=framed && reset_pending_,table=reset && table_pending_;
-    /* A plain (kernel) submission cannot carry the switch: a pending table waits for the next framed one. */
-    const uint32_t extra=framed?RingPrologueWords+(reset?RingResetWords:0)+(table?RingTableWords:0)+RingFramedFenceWords+
+    /* A plain (kernel) submission cannot carry the switch: a pending table waits for the next framed one. An A6xx core takes
+     * neither a context entry nor a BV fence, so its framed submission costs six prologue words and one plain fence. */
+    const uint32_t extra=generation_==6?RingA6xxPrologueWords+RingFenceWords:
+        framed?RingPrologueWords+(reset?RingResetWords:0)+(table?RingTableWords:0)+RingFramedFenceWords+
         (stamps_?2*RingStampWords:0)+(preempt_?RingPseudoWords+RingYieldWords:0):RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);
