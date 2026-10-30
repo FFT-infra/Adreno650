@@ -44,6 +44,41 @@ int main()
         CHECK(peer.regs[0x0038]==programmed && irq.enabled()==programmed);
         CHECK(irq.detach()==kIOReturnSuccess && irq.detach()==kIOReturnNotReady);
     }
+    /* The A6xx enable set is A6XX_INT_MASK, term by term: the eleven bits of a6xx_gpu.c's
+     * definition, summed from a6xx.xml.h. Pinned as a number so a rename or a dropped
+     * term in the enum fails here rather than as a hang on the device. */
+    {
+        CHECK(NativeAdrenoIrq::maskA6xx()==0x03d0e242u);
+        /* CP_IB1 and CP_IB2 are the bits A6xx raises and A7XX does not. */
+        CHECK((NativeAdrenoIrq::maskA6xx()&((1u<<13)|(1u<<14)))==((1u<<13)|(1u<<14)));
+        CHECK((NativeAdrenoIrq::mask()&((1u<<13)|(1u<<14)))==0u);
+        /* GPC, CP_SW, RB_DONE_TS, TSB_WRITE and FUSE exist on A7XX only. */
+        const uint32_t a7_only=(1u<<7)|(1u<<8)|(1u<<17)|(1u<<28)|(1u<<29);
+        CHECK((NativeAdrenoIrq::mask()&a7_only)==a7_only);
+        CHECK((NativeAdrenoIrq::maskA6xx()&a7_only)==0u);
+        /* The two sets differ in exactly those seven bits and agree everywhere else. */
+        CHECK((NativeAdrenoIrq::mask()^NativeAdrenoIrq::maskA6xx())==(a7_only|(1u<<13)|(1u<<14)));
+    }
+    /* Programming the A6xx set writes it and reads it back, as the A7XX path does. */
+    {
+        reset();NativeAdrenoIrq irq;CHECK(irq.attach(&io)==kIOReturnSuccess);
+        uint32_t programmed=0;
+        CHECK(irq.programMask(&programmed,true)==kIOReturnSuccess);
+        CHECK(programmed==0x03d0e242u && irq.enabled()==programmed);
+        CHECK(peer.regs[0x0038]==0x03d0e242u);
+        CHECK(irq.detach()==kIOReturnSuccess);
+    }
+    /* A board that programmed the A6xx set and read something else poisons the decoder. */
+    {
+        reset();NativeAdrenoIrq irq;CHECK(irq.attach(&io)==kIOReturnSuccess);
+        uint32_t programmed=0;
+        CHECK(irq.programMask(&programmed,true)==kIOReturnSuccess);
+        peer.regs[0x0038]=NativeAdrenoIrq::mask();   /* the A7XX set came back instead */
+        /* A second programMask reads the register it just wrote, so it sees its own value. */
+        CHECK(irq.programMask(&programmed,true)==kIOReturnSuccess);
+        CHECK(programmed==0x03d0e242u);
+        CHECK(irq.detach()==kIOReturnSuccess);
+    }
     /* Each class is decoded, acknowledged and classified. */
     {
         reset();NativeAdrenoIrq irq;CHECK(irq.attach(&io)==kIOReturnSuccess);
