@@ -6,7 +6,9 @@
 // is staged out of __mod_init_func and run by the board probe after the original IOGPUFamily kext has loaded, because the
 // parent metaclass does not exist before that. The class is named after the Apple accelerator class on purpose, so original
 // sandbox profiles that name the service class accept the Adreno plugin's open; the Apple AGX kext is never loaded here.
-#include "../NativeMetal/OriginalAcceleratorABI.h"
+/* AdrenoMetal is the canonical checkout: a board repository has no NativeMetal compatibility link in
+ * its build tree, so ../NativeMetal resolves nowhere and this file would not compile at all. */
+#include "../AdrenoMetal/OriginalAcceleratorABI.h"
 #include <IOKit/IOUserClient.h>
 
 extern "C" IOReturn native_adreno_new_user_client(IOService *,task_t,void *,UInt32,OSDictionary *,IOUserClient **,unsigned);
