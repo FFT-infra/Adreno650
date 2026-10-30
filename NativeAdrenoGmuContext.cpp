@@ -16,12 +16,17 @@ static void readBack(const ArmSmmu4KIo *io,const ArmSmmu4KProgramResult *program
     io->read64(io->cookie,size_t(program->context_offset)+0x20,&r->ttbr0);
 }
 IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,
-    unsigned slot,uint16_t sid,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
+    const ArmSmmu4KStream *routes,size_t route_count,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
 {
     if(!report)return kIOReturnBadArgument;
     *report={};
     if(used_)return kIOReturnBusy;
-    if(!io || bank>63 || !asid || asid>0xffff || slot>127)return kIOReturnBadArgument;
+    if(!io || !routes || !route_count || route_count>8 || bank>63 || !asid || asid>0xffff)return kIOReturnBadArgument;
+    for(size_t i=0;i<route_count;++i) {
+        if(routes[i].slot>127)return kIOReturnBadArgument;
+        for(size_t j=0;j<i;++j)if(routes[i].slot==routes[j].slot)return kIOReturnBadArgument;
+    }
+    const unsigned slot=routes[0].slot;   /* the readback shows the first route */
     used_=true;
     IOReturn status=kIOReturnSuccess;
     auto step=[&](Step s) {report->step=s;if(progress)progress(s);};
@@ -64,8 +69,7 @@ IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
     }
     if(!status) {
         step(Attach);
-        const ArmSmmu4KStream route{slot,sid};
-        status=smmu_.attach(&route,1);
+        status=smmu_.attach(routes,route_count);
         const ArmSmmu4KStreamResult *s=smmu_.streamResult();
         report->route_status=smmu_.attachStatus();
         report->route_phase=s->phase;report->route_writes=s->writes;report->routes_verified=s->streams_verified;
@@ -88,21 +92,39 @@ IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
     if(report->step>=Program)readBack(io,smmu_.programResult(),bank,slot,report);
     return status;
 }
+IOReturn NativeAdrenoGmuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,
+    unsigned slot,uint16_t sid,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
+{
+    const ArmSmmu4KStream route{slot,sid};
+    return bringUp(io,bank,asid,&route,1u,progress,report);
+}
 /* Lives for the rest of the boot: the context bank points at its tables. */
 static NativeAdrenoGmuContext *board_context;
-extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu,size_t bytes,
-    unsigned bank,unsigned asid,unsigned slot,unsigned sid,void (*progress)(uint32_t),
-    NativeAdrenoGmuContextReport *report)
+extern "C" IOReturn NativeAdrenoGmuContextBringupRoutes(volatile uint8_t *smmu,size_t bytes,
+    unsigned bank,unsigned asid,const unsigned *slots,const unsigned *sids,unsigned count,
+    void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
 {
     static ArmSmmu4KMmio mmio;
     static ArmSmmu4KIo io;
     NativeAdrenoGmuContext *&context=board_context;
-    if(!report || context || !smmu || !bytes || sid>0xffff)return kIOReturnBadArgument;
+    if(!report || context || !smmu || !bytes || !slots || !sids || !count || count>8)
+        return kIOReturnBadArgument;
+    ArmSmmu4KStream routes[8];
+    for(unsigned i=0;i<count;++i) {
+        if(sids[i]>0xffff)return kIOReturnBadArgument;
+        routes[i]={slots[i],uint16_t(sids[i])};
+    }
     mmio={reinterpret_cast<volatile unsigned char *>(smmu),bytes};
     if(ArmSmmu4KBindMmio(&mmio,&io)!=ArmSmmu4KSuccess)return kIOReturnBadArgument;
     context=new NativeAdrenoGmuContext;
     if(!context)return kIOReturnNoMemory;
-    return context->bringUp(&io,bank,asid,slot,uint16_t(sid),progress,report);
+    return context->bringUp(&io,bank,asid,routes,count,progress,report);
+}
+extern "C" IOReturn NativeAdrenoGmuContextBringup(volatile uint8_t *smmu,size_t bytes,
+    unsigned bank,unsigned asid,unsigned slot,unsigned sid,void (*progress)(uint32_t),
+    NativeAdrenoGmuContextReport *report)
+{
+    return NativeAdrenoGmuContextBringupRoutes(smmu,bytes,bank,asid,&slot,&sid,1,progress,report);
 }
 extern "C" IOReturn NativeAdrenoGmuContextPayloads(NativeAdrenoGmuPayload out[5])
 {
