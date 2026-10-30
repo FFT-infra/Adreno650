@@ -8,14 +8,17 @@
 
 static const uint64_t kIovas[GpuBufferCount]={GpuSqeIova,GpuRingIova,GpuMemptrsIova,GpuPwrupIova,GpuScratchIova};
 static const size_t kBytes[GpuBufferCount]={GpuSqeBytes,GpuRingBytes,GpuPageBytes,GpuPageBytes,GpuPageBytes};
-IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
-    const uint16_t sids[2],void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
+IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned *slots,
+    const uint16_t *sids,unsigned count,void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
 {
     if(!report)return kIOReturnBadArgument;
     *report={};
     if(used_)return kIOReturnBusy;
-    if(!io || !slots || !sids || bank>63 || !asid || asid>0xffff || slots[0]>127 || slots[1]>127 ||
-        slots[0]==slots[1])return kIOReturnBadArgument;
+    if(!io || !slots || !sids || !count || count>8 || bank>63 || !asid || asid>0xffff)return kIOReturnBadArgument;
+    for(unsigned i=0;i<count;++i) {
+        if(slots[i]>127)return kIOReturnBadArgument;
+        for(unsigned j=0;j<i;++j)if(slots[i]==slots[j])return kIOReturnBadArgument;
+    }
     used_=true;kernel_asid_=asid;
     IOReturn status=kIOReturnSuccess;
     auto step=[&](Step s) {report->step=s;if(progress)progress(s);};
@@ -48,8 +51,9 @@ IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
     }
     if(!status) {
         step(Attach);
-        const ArmSmmu4KStream routes[2]={{slots[0],sids[0]},{slots[1],sids[1]}};
-        status=smmu_.attach(routes,2);
+        ArmSmmu4KStream routes[8];
+        for(unsigned i=0;i<count;++i)routes[i]={slots[i],sids[i]};
+        status=smmu_.attach(routes,count);
         const ArmSmmu4KStreamResult *s=smmu_.streamResult();
         report->route_status=smmu_.attachStatus();
         report->route_phase=s->phase;report->route_writes=s->writes;report->routes_verified=s->streams_verified;
@@ -74,6 +78,11 @@ IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,uns
     }
     report->status=status;
     return status;
+}
+IOReturn NativeAdrenoGpuContext::bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
+    const uint16_t sids[2],void (*progress)(uint32_t),NativeAdrenoGmuContextReport *report)
+{
+    return bringUp(io,bank,asid,slots,sids,2u,progress,report);
 }
 extern "C" volatile uint32_t native_adreno_table_switches[8];
 IOReturn NativeAdrenoGpuContext::enableSwitching()
@@ -224,20 +233,31 @@ IOReturn NativeAdrenoGpuContext::probeBuffer(NativeAdrenoProcessVm *p,uint64_t *
     return kIOReturnSuccess;
 }
 static NativeAdrenoGpuContext *board_gpu_context;
-extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
-    unsigned slot0,unsigned sid0,unsigned slot1,unsigned sid1,void (*progress)(uint32_t),
+extern "C" IOReturn NativeAdrenoGpuContextBringupRoutes(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
+    const unsigned *slots,const unsigned *sids,unsigned count,void (*progress)(uint32_t),
     NativeAdrenoGmuContextReport *report)
 {
     static ArmSmmu4KMmio mmio;
     static ArmSmmu4KIo io;
-    if(!report || board_gpu_context || !smmu || !bytes || sid0>0xffff || sid1>0xffff)return kIOReturnBadArgument;
+    if(!report || board_gpu_context || !smmu || !bytes || !slots || !sids || !count || count>8)
+        return kIOReturnBadArgument;
+    uint16_t wide[8];
+    for(unsigned i=0;i<count;++i) {
+        if(sids[i]>0xffff)return kIOReturnBadArgument;
+        wide[i]=uint16_t(sids[i]);
+    }
     mmio={reinterpret_cast<volatile unsigned char *>(smmu),bytes};
     if(ArmSmmu4KBindMmio(&mmio,&io)!=ArmSmmu4KSuccess)return kIOReturnBadArgument;
     board_gpu_context=new NativeAdrenoGpuContext;
     if(!board_gpu_context)return kIOReturnNoMemory;
-    const unsigned slots[2]={slot0,slot1};
-    const uint16_t sids[2]={uint16_t(sid0),uint16_t(sid1)};
-    return board_gpu_context->bringUp(&io,bank,asid,slots,sids,progress,report);
+    return board_gpu_context->bringUp(&io,bank,asid,slots,wide,count,progress,report);
+}
+extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
+    unsigned slot0,unsigned sid0,unsigned slot1,unsigned sid1,void (*progress)(uint32_t),
+    NativeAdrenoGmuContextReport *report)
+{
+    const unsigned slots[2]={slot0,slot1},sids[2]={sid0,sid1};
+    return NativeAdrenoGpuContextBringupRoutes(smmu,bytes,bank,asid,slots,sids,2,progress,report);
 }
 extern "C" IOReturn NativeAdrenoGpuContextBuffers(NativeAdrenoGpuBuffer out[5])
 {

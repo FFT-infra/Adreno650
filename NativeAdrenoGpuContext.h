@@ -55,9 +55,14 @@ public:
     NativeAdrenoGpuContext()=default;
     NativeAdrenoGpuContext(const NativeAdrenoGpuContext &)=delete;
     NativeAdrenoGpuContext &operator=(const NativeAdrenoGpuContext &)=delete;
-    /* The report is the GMU context's: route counts cover both streams. */
+    /* The report is the GMU context's: route counts cover every stream. */
     IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned slots[2],
         const uint16_t sids[2],void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
+    /* Any number of streams, 1..8. An A6xx on SM8250 declares its GPU context as iommus = <&kgsl_smmu 0x0 0x401>, whose
+     * mask expands to four stream IDs (0x0, 0x1, 0x400, 0x401); the two-stream form above cannot express that, so the board
+     * entry points that need four use this one. The two-stream form delegates here. */
+    IOReturn bringUp(const ArmSmmu4KIo *io,unsigned bank,unsigned asid,const unsigned *slots,
+        const uint16_t *sids,unsigned count,void (*progress)(uint32_t step),NativeAdrenoGmuContextReport *report);
     bool ready() const {return ready_;}
     /* The GPU address size of every table of this bank (ias). */
     unsigned inputBits() const {return input_bits_;}
@@ -93,6 +98,10 @@ private:
 };
 extern "C" IOReturn NativeAdrenoGpuContextBringup(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
     unsigned slot0,unsigned sid0,unsigned slot1,unsigned sid1,void (*progress)(uint32_t),
+    NativeAdrenoGmuContextReport *report);
+/* The same with any number of routes (slots[i] matches sids[i]), count 1..8. */
+extern "C" IOReturn NativeAdrenoGpuContextBringupRoutes(volatile uint8_t *smmu,size_t bytes,unsigned bank,unsigned asid,
+    const unsigned *slots,const unsigned *sids,unsigned count,void (*progress)(uint32_t),
     NativeAdrenoGmuContextReport *report);
 /* sqe, ring, memptrs, pwrup, scratch: physical base, size and GPU address, only after Ready. */
 extern "C" IOReturn NativeAdrenoGpuContextBuffers(NativeAdrenoGpuBuffer out[5]);
