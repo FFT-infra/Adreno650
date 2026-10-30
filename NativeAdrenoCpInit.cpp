@@ -16,7 +16,9 @@ enum : uint32_t {
     CpMeInitOpcode = 0x48,
     CpConcurrentBinDisable = 1u << 27,
     CpMeInitWords = 8,
-    CpInitWords = 10
+    CpInitWords = 10,
+    /* a6xx_cp_init(): OUT_PKT7(CP_ME_INIT, 8) plus its own dword, so the packet is 1 + 8 words. */
+    CpA6xxMeInitWords = 8
 };
 IOReturn NativeAdrenoCpInit::poison()
 {
@@ -32,8 +34,12 @@ IOReturn NativeAdrenoCpInit::run(const NativeAdrenoRingIo *io,NativeAdrenoRing *
     if(!fence)return kIOReturnBadArgument;*fence=0;
     if(done_ || poisoned_)return kIOReturnNotReady;
     if(!io || !io->write32 || !ring || ring->poisoned())return kIOReturnBadArgument;
-    if(!config || !config->sqe_iova || (config->sqe_iova&4095) ||
-        config->sqe_iova>=UINT64_C(1)<<48 || !config->pwrup_reglist_iova ||
+    if(!config || (config->generation && config->generation!=6 && config->generation!=7))
+        return kIOReturnBadArgument;
+    const bool a6xx=config->generation==6;
+    /* a6xx_cp_init() takes no power-up register list, so an A6xx core is not asked for one. */
+    if(!config->sqe_iova || (config->sqe_iova&4095) ||
+        config->sqe_iova>=UINT64_C(1)<<48 || (!a6xx && !config->pwrup_reglist_iova) ||
         (config->pwrup_reglist_iova&3) || config->pwrup_reglist_iova>=UINT64_C(1)<<48)
         return kIOReturnBadArgument;
     if(config->sqe_base_programmed) {
@@ -44,6 +50,18 @@ IOReturn NativeAdrenoCpInit::run(const NativeAdrenoRingIo *io,NativeAdrenoRing *
         io->write32(io->cookie,CpSqeInstrBase+1,(uint32_t)(config->sqe_iova>>32)))
         return poison();
     uint32_t words[CpInitWords]={0};
+    if(a6xx) {
+        /* a6xx_cp_init(): one CP_ME_INIT of eight words, no CP_THREAD_CONTROL and no register list. Word 1 is Linux's mask
+         * 0x2f (multiple hardware contexts, error detection); then three hardware contexts, 0x20000000 no header dump, and
+         * zeros for the workarounds and the padding. */
+        if(AdrenoPM4Type7(CpMeInitOpcode,CpA6xxMeInitWords,&words[0])!=AdrenoPM4Success)return poison();
+        words[1]=0x2f;words[2]=0x00000003;words[3]=0x20000000;
+        uint32_t value=0;
+        const IOReturn status=fenced?ring->submit(words,1+CpA6xxMeInitWords,&value):ring->submitUnfenced(words,1+CpA6xxMeInitWords);
+        if(status)return poison();
+        done_=true;*fence=value;
+        return kIOReturnSuccess;
+    }
     if(AdrenoPM4Type7(CpThreadControlOpcode,1,&words[0])!=AdrenoPM4Success ||
         AdrenoPM4Type7(CpMeInitOpcode,7,&words[2])!=AdrenoPM4Success)return poison();
     words[1]=CpConcurrentBinDisable;
