@@ -4,10 +4,13 @@
 #include "NativeAdrenoRing.h"
 struct NativeAdrenoCpInitConfig {
     uint64_t sqe_iova;             /* CP_SQE_INSTR_BASE, 4 KiB aligned, nonzero */
-    uint64_t pwrup_reglist_iova;   /* Power-up register list, 4-byte aligned */
+    uint64_t pwrup_reglist_iova;   /* Power-up register list, 4-byte aligned; 0 on an A6xx core, whose a6xx_cp_init reads none */
     /* Nonzero when the caller already wrote CP_SQE_INSTR_BASE before CP_SQE_CNTL, as a6xx hw_init does: the base is
      * then read back and compared instead of rewritten after the SQE started. */
     uint32_t sqe_base_programmed;
+    /* 0 or 7: the pinned a7xx_cp_init sequence, which takes a power-up register list. 6: a6xx_cp_init(), one CP_ME_INIT of
+     * eight words with no CP_THREAD_CONTROL and no list. */
+    uint32_t generation;
 };
 /* One-shot A7XX command-processor start sequence, not a GPU power or reset
  * driver. The caller must have completed GMU boot, powered GX/core clocks,

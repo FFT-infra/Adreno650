@@ -57,6 +57,9 @@ class NativeAdrenoRing final {
     uint32_t next_=0,rptr_shadow_=0,seqno_=0,completed_=0,submissions_=0;
     bool attached_=false,poisoned_=false,reset_pending_=false;
     uint32_t context_=0;
+    /* The core generation this ring drives: 7 (the default, this driver's own target) or 6 (an A6xx core, set by setGeneration()
+     * before attach()). It decides the prologue, the fence form and CP_RB_CNTL's NO_UPDATE; see the A6xx constants in the .cpp. */
+    unsigned generation_=7;
     /* The GPU page table the CP runs (TTBR0 with its ASID in bits 63:48) and whether the next framed prologue must switch to it. */
     uint64_t table_=0;
     bool table_pending_=false;
@@ -86,8 +89,13 @@ class NativeAdrenoRing final {
     /* The one submission path: `number` is the fence this submission issues (the ring's next, or the caller's). */
     IOReturn submitWords(const uint32_t *words,size_t word_count,uint32_t number,bool framed,bool give_wptr,uint32_t *issued);
     IOReturn program();
+    IOReturn emitA6xxPrologue(uint32_t at,uint32_t *end);
 public:
     NativeAdrenoRing()=default;
+    /* The core generation this ring drives, 6 or 7 (7 is the default). Only before attach(): the value decides the ring's register
+     * programming and the form of every submission, so it cannot change under a running ring. */
+    IOReturn setGeneration(unsigned generation);
+    unsigned generation() const {return generation_;}
     ~NativeAdrenoRing()=default;
     NativeAdrenoRing(const NativeAdrenoRing &)=delete;
     NativeAdrenoRing &operator=(const NativeAdrenoRing &)=delete;

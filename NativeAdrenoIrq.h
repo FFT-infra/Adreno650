@@ -41,10 +41,21 @@ public:
     /* The exact A7XX enable set: AHB, ATB async, GPC, CP_SW, CP_HW, PM4,
      * RB_DONE_TS, CACHE_FLUSH_TS, ATB bus, hang, UCHE OOB/trap, TSB, fuse. */
     IOReturn programMask(uint32_t *programmed);
+    /* The same with the A6xx enable set instead (maskA6xx()): programMask() is
+     * the A7XX default, and a board on an A6xx core programs this one. */
+    IOReturn programMask(uint32_t *programmed,bool a6xx);
     /* Reads, acknowledges, then decodes. Acknowledgement precedes decoding so
      * an error reported here cannot be hidden by a later clear failure. */
     IOReturn handle(NativeAdrenoIrqResult *);
     static uint32_t mask();
+    /* A6XX_INT_MASK: the A7XX set with CP_IB1/CP_IB2 in place of GPC, CP_SW,
+     * CP_RB_DONE_TS, TSB_WRITE and FUSE. A6xx has no preemption (no CP_SW), no
+     * RB_DONE timestamp (its ring completion bit is CP_RB) and no TSB/fuse
+     * interrupt; it raises IB1/IB2 instead, which A7XX does not. Writing the
+     * A7XX set on an A6xx core leaves the two IB interrupts masked, which is
+     * how a hang shows up as "the fence never came" rather than as an
+     * interrupt. */
+    static uint32_t maskA6xx();
     static uint32_t cpErrorMask();
     bool poisoned() const {return poisoned_;}
     uint32_t enabled() const {return enabled_;}
