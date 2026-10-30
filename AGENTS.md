@@ -2,11 +2,17 @@
 
 ## Responsibility
 
-Maintain A740 kernel GPU driver.
+Maintain the A650 kernel GPU driver fork for SM8250 boards.
+
+This repository forks UniXNU/Adreno740, whose driver targets A740 on SM8550.
+The fork carries the A650 (a6xx) path. The component identity stays `Adreno740`
+in the catalog and the archive name stays `libAdreno740.a`, because
+`scripts/build-xnu-4k-baseline.sh` hard-codes it; that name describes the
+catalog entry, not the silicon.
 
 ## Required reading
 
-1. Read this repository's README and [component documentation](https://unixnu.com/drivers/adreno740).
+1. Read this repository's README and [component documentation](https://unixnu.com/drivers/adreno740), plus [GPU porting](https://unixnu.com/zh/porting/gpu) for the A650 path.
 2. Read the [component catalog](https://unixnu.com/reference/components) and selected SoC and OS profiles in UniXNU.
 3. Read the relevant implementation and its build entry point before editing.
 4. For ports, read the [porting overview](https://unixnu.com/porting/), [repository specification](https://unixnu.com/porting/device-repository), and [device-tree specification](https://unixnu.com/porting/device-tree).
