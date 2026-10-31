@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "NativeAdrenoVm.h"
+#include "NativeAdrenoMemory.h"   /* NativeAdrenoMaintainPhysicalPages for the physical-page scrub */
 #include "NativeAdrenoVmAlias.h"
 extern "C" volatile uint32_t native_adreno_trace_stage;
 extern "C" {int (*native_adreno_dram_read32)(uint64_t,uint32_t *);int (*native_adreno_cached_read32)(uint64_t,uint32_t *);
@@ -558,19 +559,43 @@ IOReturn NativeAdrenoVm::dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *pa
 {
     if(patched)*patched=0;
     if(!attached_ || poisoned_ || !bytes)return kIOReturnBadArgument;
+    constexpr uint32_t kWaitForIdle=UINT32_C(0x70268000), kNop=UINT32_C(0x70108000);
     for(size_t i=0;i<high_;++i) {
         const Mapping &m=mappings_[i];
         if(!m.memory || iova<m.iova || iova-m.iova>=m.memory->bytes())continue;
-        void *cpu=m.memory->mapping();
-        if(!cpu)return kIOReturnUnsupported;             /* no CPU view: the caller leaves the IB alone */
         const size_t offset=(size_t)(iova-m.iova);
         if(offset+bytes>m.memory->bytes())return kIOReturnBadArgument;
-        volatile uint32_t *w=static_cast<volatile uint32_t *>(cpu)+offset/4;
-        const size_t count=bytes/4;
-        for(size_t k=0;k<count;++k) {
-            if(w[k]==UINT32_C(0x70268000)) {w[k]=UINT32_C(0x70108000);if(patched)*patched=*patched+1;}   /* CP_NOP, type 7, no payload */
+        /* The kernel's own CPU view, when the BO has one. */
+        if(void *cpu=m.memory->mapping()) {
+            volatile uint32_t *w=static_cast<volatile uint32_t *>(cpu)+offset/4;
+            for(size_t k=0;k<bytes/4;++k) if(w[k]==kWaitForIdle) {w[k]=kNop;if(patched)*patched=*patched+1;}
+            __asm__ volatile("dsb sy" ::: "memory");
+            return kIOReturnSuccess;
         }
-        __asm__ volatile("dsb sy" ::: "memory");
+        /* No CPU view (a client BO the client maps itself): translate through this VM's own tables and write
+         * the page directly. One page at a time, cleaned to the point of coherency after the write so the CP
+         * reads what was written. */
+        for(size_t done=0;done<bytes;) {
+            const uint64_t va=iova+done, page=va&~UINT64_C(0xfff);
+            const size_t inPage=(size_t)(va-page);
+            const size_t take=bytes-done<4096-inPage?bytes-done:4096-inPage;
+            uint64_t pa=0;
+            if(!leafPhysical(page,&pa))return kIOReturnBadArgument;
+            IODeviceMemory *dev=IODeviceMemory::withRange(pa,0x1000);
+            if(!dev)return kIOReturnNoMemory;
+            IOMemoryMap *map=dev->map(kIOMapAnywhere|kIOMapWriteCombineCache);
+            dev->release();
+            if(!map)return kIOReturnNoMemory;
+            volatile uint32_t *w=static_cast<volatile uint32_t *>(map->getVirtualAddress());
+            for(size_t k=0;k<take/4;++k) {
+                const size_t at=inPage/4+k;
+                if(w[at]==kWaitForIdle) {w[at]=kNop;if(patched)*patched=*patched+1;}
+            }
+            __asm__ volatile("dsb sy" ::: "memory");
+            map->release();
+            (void)NativeAdrenoMaintainPhysicalPages(pa,0x1000,NativeAdrenoClean);
+            done+=take;
+        }
         return kIOReturnSuccess;
     }
     return kIOReturnBadArgument;
