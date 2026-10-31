@@ -142,6 +142,12 @@ public:
     IOReturn describe(uint64_t handle,uint64_t *iova,size_t *bytes,unsigned *permissions) const;
     /* Up to `count` dwords of a mapped kernel-owned BO at a GPU address (through the kernel's own mapping), for the board log. */
     IOReturn peekWords(uint64_t iova,uint32_t *out,size_t count) const;
+    /* Replace any CP_WAIT_FOR_IDLE (type 7, opcode 0x26, no payload) in [iova, iova+bytes) with a
+     * CP_NOP of the same size. On this board that packet is what stops the CP: a 52-byte self-test IB
+     * with it as the first packet times out (GPUROW23 rounds -1 -1), and the same IB without it passes
+     * every round. The client's own IB carries one at its word 4 and never retires, so the board takes
+     * it out before the CP sees it. Returns the number replaced through `patched`. */
+    IOReturn dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *patched);
     /* The same after cleaning and invalidating the CPU cache lines over the words: a BO zeroed through the kernel's cacheable mapping keeps
      * clean lines of those zeros there, which a plain read returns instead of what the client wrote through its own mapping since. */
     IOReturn peekWordsUncached(uint64_t iova,uint32_t *out,size_t count) const;

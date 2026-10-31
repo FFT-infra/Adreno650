@@ -71,6 +71,8 @@ extern "C" {volatile uint32_t native_adreno_unstick[15];}
  * the GPU. [198] the two statuses, [199] how many words differ. */
 extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96+96+2+16+80];volatile uint32_t native_adreno_ib_log_count;}
 extern "C" volatile uint32_t native_adreno_table_switches[8];
+/* CP_WAIT_FOR_IDLE packets the board removed from client IBs before the CP saw them. */
+extern "C" volatile uint32_t native_adreno_wfi_dropped;
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
 /* The jobs' timeline (the newest native_adreno_tl_cap retired, allocated at attach): [0] fence | indirect buffers << 32 | ring status << 58, [1] submit
@@ -457,6 +459,13 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
     }
     /* The coherence sample reads the first IB's word through a fresh uncached mapping before and after the publication: every 64th
      * submission only (two such mappings per submission were CPU time on every frame). */
+    /* The board's CP stops on CP_WAIT_FOR_IDLE (see NativeAdrenoVm::dropWaitForIdle): take it out of the
+     * IB the CP is about to read. Counted so the log can say how often it happens. */
+    for(size_t i=0;i<count;++i) {
+        uint32_t patched=0;
+        if(vm_->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched)==kIOReturnSuccess)
+            native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
+    }
     phase[3]=mach_absolute_time();
     static uint32_t coherence_turn;
     const bool sample=!(coherence_turn++&63);
