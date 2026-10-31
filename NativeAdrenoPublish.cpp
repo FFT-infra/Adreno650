@@ -898,6 +898,16 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
         return kIOReturnUnsupported;
     }
     shiftName(native_adreno_metal_diag.opener);
+    /* A kernel connection (the board's self test) is not a client and must not be refused: type 0 is the kernel's. */
+    /* sheng-gpu-no-clients=1 refuses every user connection. The self test needs a quiet GPU: while a client
+     * submits, its jobs sit in the same ring and its close rewrites the table, so a self-test round can fail
+     * for reasons that have nothing to do with the test (fix41..fix53 read -1 -1 on rounds that also had
+     * uc 16/19). Refused connections are counted so a round still says whether anyone asked. */
+    {
+        static unsigned noClients;
+        if(!noClients)PE_parse_boot_argn("sheng-gpu-no-clients",&noClients,sizeof noClients);
+        if(noClients && owningTask!=kernel_task) {native_adreno_metal_diag.bad=native_adreno_metal_diag.bad+1;return kIOReturnNotPermitted;}
+    }
     AGXDeviceUserClient *connection=new AGXDeviceUserClient;
     if(!connection)return kIOReturnNoMemory;
     if(!connection->initWithTask(owningTask,securityID,type,properties)) {
