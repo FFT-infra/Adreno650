@@ -213,7 +213,13 @@ static void nativeAdrenoHangcheck(void *,wait_result_t)
         bool hung=false;
         if(g.submit && !g.submit->hangCheck(&hung) && hung) {
             native_adreno_recovery[0]=native_adreno_recovery[0]+1;
-            if(g.restart) {
+            /* sheng-gpu-norestart=1 counts hangs and does not restart: the recovery loop replays the same
+             * submission that hung the ring, so it runs once per 500 ms check and buries the original
+             * reading (fix51: hangs 169, restarts 169, fence climbing 173..175 in 176 s). With it off, one
+             * hang is one hang and the submission that caused it stays visible. */
+            static unsigned noRestart;
+            if (!noRestart) PE_parse_boot_argn("sheng-gpu-norestart", &noRestart, sizeof noRestart);
+            if(g.restart && !noRestart) {
                 uint32_t fault[4]={};
                 if(g.context && !g.context->endFault(fault) && fault[0]) {
                     native_adreno_recovery_fault[0]=native_adreno_recovery_fault[0]+1;
