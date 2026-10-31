@@ -172,13 +172,16 @@ IOReturn NativeAdrenoUserClient::releaseAll(const NativeAdrenoRingClock *clock,u
     if(!open_)return kIOReturnNotReady;
     if(!clock)return kIOReturnBadArgument;
     IOReturn status=(scoped_ || used_)?submit_->waitRange(queue_base_,NativeAdrenoQueueRange,clock,timeout_us):kIOReturnSuccess;
+    IOLog("gpu close: waitRange %x\n", uint32_t(status));
     if(status)return status;
     for(size_t index=0;index<entry_count_;++index) {
         Entry &entry=at(index);
         if(!entry.used)continue;
         entry.mapping_leases=0;
         NativeAdrenoAbiBoFree request{entry.handle};
+        IOLog("gpu close: freeBo %u\n", (unsigned)index);
         status=freeBo(&request);
+        IOLog("gpu close: freeBo %u -> %x\n", (unsigned)index, uint32_t(status));
         if(status)return status;
     }
     for(uint32_t i=1;i<queue_capacity_;++i)queues_[i]=Queue{};
