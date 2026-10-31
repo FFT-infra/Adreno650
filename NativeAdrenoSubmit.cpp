@@ -69,7 +69,7 @@ extern "C" {volatile uint32_t native_adreno_unstick[15];}
  * maintenance first). The two branches in NativeAdrenoVm are different code paths, and a client IB
  * that reads as zeros through one and real packets through the other says the reader is wrong, not
  * the GPU. [198] the two statuses, [199] how many words differ. */
-extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96+96+2+16];volatile uint32_t native_adreno_ib_log_count;}
+extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96+96+2+16+80];volatile uint32_t native_adreno_ib_log_count;}
 extern "C" volatile uint32_t native_adreno_table_switches[8];
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
@@ -503,6 +503,12 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
         {uint32_t tail[16]={};const uint32_t bytes=buffers[0].bytes;
          if(bytes>64) (void)vm_->peekWordsUncached(buffers[0].iova+bytes-64,tail,16);
          for(unsigned i=0;i<16;++i)native_adreno_ib_log[slot][200+i]=tail[i];}
+        /* The middle: the head is 96 of 184 dwords, so words 96..183 were never seen, and a BO that
+         * reads as real packets in its first 96 and zeros after 96 says the client's own write stopped
+         * there rather than that the CP failed. */
+        {uint32_t mid[80]={};const uint32_t bytes=buffers[0].bytes;
+         if(bytes>384)(void)vm_->peekWordsUncached(buffers[0].iova+384,mid,80);
+         for(unsigned i=0;i<80;++i)native_adreno_ib_log[slot][216+i]=mid[i];}
         native_adreno_ib_log[slot][198]=uint32_t(hookStatus)|(uint32_t(viewStatus)<<16);
         {unsigned differ=0;for(unsigned i=0;i<96;++i)if(head[i]!=view[i])++differ;native_adreno_ib_log[slot][199]=differ;}
         native_adreno_ib_log_count=native_adreno_ib_log_count+1;
