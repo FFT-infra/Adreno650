@@ -7,6 +7,8 @@ extern "C" {int (*native_adreno_dram_read32)(uint64_t,uint32_t *);int (*native_a
     int (*native_adreno_line_audit)(uint64_t,size_t,uint32_t *,uint32_t *);}
 #include <string.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IODeviceMemory.h>
+#include <IOKit/IOMemoryDescriptor.h>
 /* 1 once the board proved the GPU's cacheable inner-shareable accesses coherent with the CPU's caches in both directions (the A740's
  * ADRENO_QUIRK_HAS_CACHED_COHERENT behind the dma-coherent GPU SMMU, which Linux maps with IOMMU_CACHE): a mapping with write-back
  * attributes then needs no CPU cache maintenance. 0 keeps every mapping maintained as before. Counters: maintenance passes skipped for
