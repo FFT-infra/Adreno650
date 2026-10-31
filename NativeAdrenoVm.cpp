@@ -588,7 +588,7 @@ IOReturn NativeAdrenoVm::dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *pa
             IOMemoryMap *map=dev->map(kIOMapAnywhere|kIOMapWriteCombineCache);
             dev->release();
             if(!map)return kIOReturnNoMemory;
-            volatile uint32_t *w=static_cast<volatile uint32_t *>(map->getVirtualAddress());
+            volatile uint32_t *w=reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
             for(size_t k=0;k<take/4;++k) {
                 const size_t at=inPage/4+k;
                 if(w[at]==kWaitForIdle) {w[at]=kNop;if(patched)*patched=*patched+1;}
