@@ -899,6 +899,10 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
      * so submitFramed hands out completed+1, completed+2, ... and a job whose fence is further ahead than
      * that position cannot match. Fix47 read step=6 value=8 with hung=5: the loop asked for fence 6 and
      * got 8, i.e. the ring had already issued two more. */
+    /* The ring's seqno carries on from where it was (fence 7 was already handed out before the hang),
+     * so a replayed submission's fence is seqno_+1 whatever the job's original number was. Match the job
+     * by its own fence and accept the ring's value: the two agree only when no submission happened between
+     * the hung job and the restart, and that is not the case here (fix47/48 both read value=8 for next=6). */
     for(uint32_t next=hung+1;next && next<=replayLast;++next) {
         Job *job=find(next);
         NativeAdrenoVm *vm=job && job->vm?job->vm:vm_;
@@ -909,12 +913,13 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
         uint32_t value=0;
         status=preemption()?ring(0)->submitFramed(run?job->words:&nop,run?job->word_count:1,next,&value):
             ring(0)->submitFramed(run?job->words:&nop,run?job->word_count:1,&value);
-        if(status || value!=next) {native_adreno_recover_trace[0]=6;native_adreno_recover_trace[1]=status?uint32_t(status):value;return poison();}
+        if(status) {native_adreno_recover_trace[0]=6;native_adreno_recover_trace[1]=uint32_t(status);return poison();}
         if(job) {
+            if(job->active) job->fence=value;
             if(job->replays<255)++job->replays;
             job->replay_us=clock && clock->now_us?clock->now_us(clock->cookie):0;
         }
-        if(job && preemption()) {job->ring=0;noteFence(next,0);}
+        if(job && preemption()) {job->ring=0;noteFence(value,0);}
         ++out->replayed;
     }
     ++stats_.restarts;
