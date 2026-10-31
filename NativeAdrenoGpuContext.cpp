@@ -5,6 +5,10 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <kern/task.h>
 #include "AdrenoPM4.h"
+/* TTBR0 switches and the ASID invalidation after each: [0] writes, [1] the kit status of the last
+ * invalidation, [2] the ASID it named. */
+extern "C" {volatile uint32_t native_adreno_ttbr0_tlb[3]={};}
+
 
 static const uint64_t kIovas[GpuBufferCount]={GpuSqeIova,GpuRingIova,GpuMemptrsIova,GpuPwrupIova,GpuScratchIova,
     GpuPreemptRecordIova,GpuPreemptRecord1Iova,GpuPreemptSmmuIova,GpuPreemptSmmu1Iova,GpuRing1Iova,GpuMemptrs1Iova};
