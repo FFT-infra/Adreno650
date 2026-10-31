@@ -76,6 +76,7 @@ extern "C" volatile uint32_t native_adreno_wfi_dropped=0;   /* a defining initia
 /* Why the drop found nothing: [0] buffers looked at, [1] no mapping for the iova, [2] mapping exists but no
  * CPU view, [3] buffers scanned, [4] the IOReturn the last refusal returned. */
 extern "C" volatile uint32_t native_adreno_wfi_try[5]={};
+extern "C" boolean_t PE_parse_boot_argn(const char *,void *,int);
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
 /* The jobs' timeline (the newest native_adreno_tl_cap retired, allocated at attach): [0] fence | indirect buffers << 32 | ring status << 58, [1] submit
@@ -464,7 +465,13 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
      * submission only (two such mappings per submission were CPU time on every frame). */
     /* The board's CP stops on CP_WAIT_FOR_IDLE (see NativeAdrenoVm::dropWaitForIdle): take it out of the
      * IB the CP is about to read. Counted so the log can say how often it happens. */
-    for(size_t i=0;i<count;++i) {
+    /* Off by default: the scrub writes a client BO's pages through a fresh write-combined mapping before
+     * every submission, and from fix41 on the self test stopped completing at its first submission
+     * (fix40 read rounds 4 4, fix41 read -1 -1). One round with it off says whether that write is the cause.
+     * pipa-gpu-wfi=1 turns it back on. */
+    unsigned scrub = 0;
+    PE_parse_boot_argn("pipa-gpu-wfi", &scrub, sizeof scrub);
+    for(size_t i=0;i<count && scrub;++i) {
         uint32_t patched=0;
         native_adreno_wfi_try[0]=native_adreno_wfi_try[0]+1;
         const IOReturn dropped=vm->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);   /* the job s VM, not the kernel s */
