@@ -1210,8 +1210,15 @@ extern "C" IOReturn native_adreno_publish(NativeAdrenoVm *vm,NativeAdrenoSubmit 
     /* Per-process address spaces: without table switching every user connection would be refused (createVm needs it). */
     g.context=NativeAdrenoGpuContextObject();
     IOReturn switching=g.context?g.context->enableSwitching():kIOReturnNotReady;
-    if(!switching)switching=submit->setTableSwitching(tableMode(),
-        [](void *cookie,uint64_t ttbr0)->IOReturn {return static_cast<NativeAdrenoGpuContext *>(cookie)->writeTtbr0(ttbr0);},g.context);
+    /* enableSwitching only tells the kit that a TTBR0 write is acceptable; it does not make anything switch.
+     * useVm returns early while the submit object has no mode, so a client's IB, which lives in that client's
+     * own address space, was submitted with the table that was already in the bank. Arm the submit path in
+     * both cases; if it refuses, keep the kit's answer so a refusal is still reported. */
+    {
+        const IOReturn armed=submit->setTableSwitching(tableMode(),
+            [](void *cookie,uint64_t ttbr0)->IOReturn {return static_cast<NativeAdrenoGpuContext *>(cookie)->writeTtbr0(ttbr0);},g.context);
+        if(!switching && armed) switching=armed;
+    }
     native_adreno_table_switches[6]=uint32_t(switching);
     if(switching)g.context=nullptr;
     else if(submit->tableMode()==2) {
