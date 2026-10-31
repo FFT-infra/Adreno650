@@ -485,7 +485,7 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
     for(size_t i=0;i<count;++i) {
         uint32_t patched=0;
         native_adreno_wfi_try[0]=native_adreno_wfi_try[0]+1;
-        const IOReturn dropped=vm_->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);
+        const IOReturn dropped=vm->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);   /* the job s VM, not the kernel s */
         native_adreno_wfi_try[3]=native_adreno_wfi_try[3]+1;
         if(dropped==kIOReturnSuccess) native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
         else if(dropped==kIOReturnBadArgument) native_adreno_wfi_try[1]=native_adreno_wfi_try[1]+1;
