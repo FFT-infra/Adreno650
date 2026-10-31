@@ -356,7 +356,15 @@ IOReturn NativeAdrenoMemory::release()
          native_adreno_close_step[2]=device_references_; native_adreno_close_step[3]=prepared_?1u:0u;
          native_adreno_close_step[4]=system_?1u:0u; native_adreno_close_step[5]=span_count_;}
         native_adreno_close_step_set(35);
-        descriptor_->release();descriptor_=nullptr;
+        /* The release itself blocks: [gpu close] shows step 35 with dev=0 prep=0 sys=1 spans=1,
+         * so the pages are unwired, no device reference is left, and it is one kernel span -- yet
+         * the descriptor does not come free. It is freed under g.lock (clientClose -> releaseAll),
+         * and the free path takes the kernel map lock, which is the one lock order this file does
+         * not control. One round leaks it instead: a self-test-sized buffer, and the rest of the
+         * close tells whether everything behind it works. */
+        /* One diagnostic round: the descriptor is dropped without freeing it, so the rest of the
+         * close can be observed. native_adreno_close_step[6] counts the leaks. */
+        ++native_adreno_close_step[6]; descriptor_=nullptr;
         native_adreno_close_step_set(36);
         native_adreno_trace_stage=34;
     }
