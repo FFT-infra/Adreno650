@@ -352,6 +352,9 @@ IOReturn NativeAdrenoMemory::release()
             prepared_=false;
         }
         native_adreno_trace_stage=33;
+        {extern volatile uint32_t native_adreno_close_step[8];
+         native_adreno_close_step[2]=device_references_; native_adreno_close_step[3]=prepared_?1u:0u;
+         native_adreno_close_step[4]=system_?1u:0u; native_adreno_close_step[5]=span_count_;}
         native_adreno_close_step_set(35);
         descriptor_->release();descriptor_=nullptr;
         native_adreno_close_step_set(36);
