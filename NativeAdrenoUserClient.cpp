@@ -362,15 +362,20 @@ IOReturn NativeAdrenoUserClient::freeBo(const NativeAdrenoAbiBoFree *request)
     native_adreno_trace_stage=2;
     if(entry->mapped_state) {
         /* Completed jobs must not pin the buffer: retire what the CP has passed before the unmap decides. */
+        closeStep(14);
         submit_->retireCompleted(); /* a poisoned execbuf refuses and the unmap below stays refused too */
+        closeStep(15);
         native_adreno_trace_stage=3;
         const IOReturn unmap=vm_->unmap(entry->mapped);
+        closeStep(16);
         native_adreno_trace_stage=4;
         if(unmap) {noteFreeRefused(entry->imported,entry->handle,unmap);return unmap;}
         entry->mapped_state=false;entry->mapped=0;entry->iova=0;
     }
     const size_t bytes=entry->memory.bytes();
+    closeStep(17);
     const IOReturn release=freed_pages_?entry->memory.releaseSystemInto(freed_pages_):entry->memory.release();
+    closeStep(18);
     if(release) {noteFreeRefused(entry->imported,entry->handle,release);return release;}
     if(!entry->imported) {
         owned_bytes_-=bytes<owned_bytes_?bytes:owned_bytes_;
