@@ -582,7 +582,7 @@ IOReturn NativeAdrenoVm::dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *pa
             const size_t inPage=(size_t)(va-page);
             const size_t take=bytes-done<4096-inPage?bytes-done:4096-inPage;
             uint64_t pa=0;
-            if(!leafPhysical(page,&pa))return kIOReturnBadArgument;
+            if(!leafPhysical(page,&pa))return kIOReturnNotReady;   /* mapping found, no leaf to translate it */
             IODeviceMemory *dev=IODeviceMemory::withRange(pa,0x1000);
             if(!dev)return kIOReturnNoMemory;
             IOMemoryMap *map=dev->map(kIOMapAnywhere|kIOMapWriteCombineCache);
