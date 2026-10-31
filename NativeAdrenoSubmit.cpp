@@ -64,7 +64,12 @@ extern "C" {volatile uint32_t native_adreno_unstick[15];}
 /* The IBs of the last submissions: [slot] fence, iova low/high, bytes, then the first 28 dwords of the first IB (read as the kernel maps it). */
 /* [0] fence, [1..2] the submission's iova, [3] its bytes, [4..5] the MAPPING's iova the handle resolves to (the
  * base the buffer sits in, so a nonzero [1] minus [4] says the IB starts inside its mapping), [6..33] the head. */
-extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96];volatile uint32_t native_adreno_ib_log_count;}
+/* The head is read twice: [6..101] through peekWords (the board's dramRead32 hook, a fresh uncached
+ * mapping per page) and [102..197] through peekWordsUncached (the kernel CPU view with cache
+ * maintenance first). The two branches in NativeAdrenoVm are different code paths, and a client IB
+ * that reads as zeros through one and real packets through the other says the reader is wrong, not
+ * the GPU. [198] the two statuses, [199] how many words differ. */
+extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96+96+2];volatile uint32_t native_adreno_ib_log_count;}
 extern "C" volatile uint32_t native_adreno_table_switches[8];
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
@@ -480,8 +485,9 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
     const unsigned index=preemption()?ringForPriority():0;
     NativeAdrenoRing *const target=ring(index);
     {
-        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[96];
-        (void)vm_->peekWords(buffers[0].iova,head,96);
+        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[96],view[96];
+        const IOReturn hookStatus=vm_->peekWords(buffers[0].iova,head,96);
+        const IOReturn viewStatus=vm_->peekWordsUncached(buffers[0].iova,view,96);
         native_adreno_ib_log[slot][0]=target->lastSubmitted()+1;native_adreno_ib_log[slot][1]=(uint32_t)buffers[0].iova;
         native_adreno_ib_log[slot][2]=(uint32_t)(buffers[0].iova>>32);native_adreno_ib_log[slot][3]=(uint32_t)buffers[0].bytes;
         {   /* The mapping the first buffer's handle resolves to: its base, so [1..2] - [4..5] is the buffer's offset inside it. */
@@ -490,6 +496,9 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
             native_adreno_ib_log[slot][4]=(uint32_t)base;native_adreno_ib_log[slot][5]=(uint32_t)(base>>32);
         }
         for(unsigned i=0;i<96;++i)native_adreno_ib_log[slot][6+i]=head[i];
+        for(unsigned i=0;i<96;++i)native_adreno_ib_log[slot][102+i]=view[i];
+        native_adreno_ib_log[slot][198]=uint32_t(hookStatus)|(uint32_t(viewStatus)<<16);
+        {unsigned differ=0;for(unsigned i=0;i<96;++i)if(head[i]!=view[i])++differ;native_adreno_ib_log[slot][199]=differ;}
         native_adreno_ib_log_count=native_adreno_ib_log_count+1;
     }
     phase[5]=mach_absolute_time();
