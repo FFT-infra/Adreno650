@@ -96,8 +96,19 @@ IOReturn NativeAdrenoGpuContext::writeTtbr0(uint64_t ttbr0)
 {
     if(!ready_ || !smmu_.configHandle()->ttbr0_switched)return kIOReturnNotReady;
     ArmSmmu4KProgramResult r;
-    return ArmSmmu4KWriteContextTtbr0(smmu_.ioHandle(),smmu_.stateHandle()->context_offset,ttbr0,&r)==ArmSmmu4KSuccess?
-        kIOReturnSuccess:kIOReturnIOError;
+    const ArmSmmu4KStatus written=ArmSmmu4KWriteContextTtbr0(smmu_.ioHandle(),smmu_.stateHandle()->context_offset,ttbr0,&r);
+    if(written!=ArmSmmu4KSuccess)return kIOReturnIOError;
+    /* The bank caches translations per ASID, and the ASID is in the TTBR0 word written above. Without
+     * an ASID invalidation the CP can keep walking the previous address space's entries for the same
+     * ASID, which reads exactly like "the IB was fetched and never executed": the fetch address
+     * translates, the packets' own addresses do not. */
+    const unsigned asid=unsigned(ttbr0>>48)&0xffffu;
+    ArmSmmu4KProgramResult sync;
+    const ArmSmmu4KStatus invalidated=ArmSmmu4KSyncContextTlb(smmu_.ioHandle(),smmu_.stateHandle()->context_offset,asid,0,1024,&sync);
+    native_adreno_ttbr0_tlb[0]=native_adreno_ttbr0_tlb[0]+1;
+    native_adreno_ttbr0_tlb[1]=uint32_t(invalidated);
+    native_adreno_ttbr0_tlb[2]=uint32_t(asid);
+    return invalidated==ArmSmmu4KSuccess?kIOReturnSuccess:kIOReturnIOError;
 }
 IOReturn NativeAdrenoGpuContext::createVm(NativeAdrenoProcessVm **out)
 {
