@@ -815,6 +815,9 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
     /* The newest fence of either ring and what the CP last wrote on the ring the restart left it on (the first ring). */
     const uint32_t last0=ring(0)->lastSubmitted(),last1=preemption()?ring(1)->lastSubmitted():0;
     const uint32_t last=(int32_t)(last1-last0)>0?last1:last0;
+    /* Each replayed job is submitted again, which advances the ring's seqno: the loop's bound has to be the
+     * number captured here, not a value re-read after the replays. */
+    const uint32_t replayLast=last;
     uint32_t fence=0;
     const bool stranded=stranded_;
     stranded_=false;last_stranded_=stranded;
@@ -891,7 +894,12 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
     }
     uint32_t nop=0;
     if(AdrenoPM4Type7(0x10,0,&nop)!=AdrenoPM4Success) {native_adreno_recover_trace[0]=4;return poison();}   /* CP_NOP */
-    for(uint32_t next=hung+1;next && next<=last;++next) {
+    /* `hung` is the fence the GPU never wrote, so that job is the one being dropped; the replay starts at
+     * the next one. Each replayed job must come back as its own fence: restart() set seqno_ to `completed`,
+     * so submitFramed hands out completed+1, completed+2, ... and a job whose fence is further ahead than
+     * that position cannot match. Fix47 read step=6 value=8 with hung=5: the loop asked for fence 6 and
+     * got 8, i.e. the ring had already issued two more. */
+    for(uint32_t next=hung+1;next && next<=replayLast;++next) {
         Job *job=find(next);
         NativeAdrenoVm *vm=job && job->vm?job->vm:vm_;
         const bool run=job && !vm->unusable() && job->word_count;
