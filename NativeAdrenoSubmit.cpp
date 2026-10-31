@@ -306,8 +306,8 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
         const IOReturn dropped=vm->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);   /* the job s VM, not the kernel s */
         native_adreno_wfi_try[3]=native_adreno_wfi_try[3]+1;
         if(dropped==kIOReturnSuccess) native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
-        else if(dropped==kIOReturnBadArgument) native_adreno_wfi_try[1]=native_adreno_wfi_try[1]+1;
-        else {native_adreno_wfi_try[2]=native_adreno_wfi_try[2]+1;native_adreno_wfi_try[4]=uint32_t(dropped);}
+        else if(dropped==kIOReturnBadArgument) native_adreno_wfi_try[1]=native_adreno_wfi_try[1]+1;   /* no mapping for the iova */
+        else {native_adreno_wfi_try[2]=native_adreno_wfi_try[2]+1;native_adreno_wfi_try[4]=uint32_t(dropped);}   /* no spine: uncached view or leaf */
     }
     phase[3]=mach_absolute_time();
     static uint32_t coherence_turn;
