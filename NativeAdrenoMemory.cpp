@@ -351,7 +351,11 @@ IOReturn NativeAdrenoMemory::release()
             prepared_=false;
         }
         native_adreno_trace_stage=33;
+        {extern void native_adreno_close_step_set(uint32_t);
+         native_adreno_close_step_set(35);}
         descriptor_->release();descriptor_=nullptr;
+        {extern void native_adreno_close_step_set(uint32_t);
+         native_adreno_close_step_set(36);}
         native_adreno_trace_stage=34;
     }
     if(owned_) {noteOwned(spans_,span_count_,false);owned_=false;}
