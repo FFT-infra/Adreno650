@@ -17,6 +17,8 @@ extern "C" volatile uint32_t native_adreno_import_stage;
  * 1 alive, 2 released, 3 free refused. */
 extern "C" {volatile uint64_t native_adreno_import_live[3+8*4];}
 extern "C" int proc_selfpid(void);
+extern "C" void native_adreno_close_step_set(uint32_t n);
+static inline void closeStep(uint32_t n) {native_adreno_close_step_set(n);}
 static unsigned gImportNext;
 static void noteImportState(uint64_t handle,uint64_t state)
 {
@@ -170,16 +172,15 @@ IOReturn NativeAdrenoUserClient::releaseAll(const NativeAdrenoRingClock *clock,u
     if(!open_)return kIOReturnNotReady;
     if(!clock)return kIOReturnBadArgument;
     IOReturn status=(scoped_ || used_)?submit_->waitRange(queue_base_,NativeAdrenoQueueRange,clock,timeout_us):kIOReturnSuccess;
-    IOLog("gpu close: waitRange %x\n", uint32_t(status));
+    closeStep(9);
     if(status)return status;
     for(size_t index=0;index<entry_count_;++index) {
         Entry &entry=at(index);
         if(!entry.used)continue;
         entry.mapping_leases=0;
         NativeAdrenoAbiBoFree request{entry.handle};
-        IOLog("gpu close: freeBo %u\n", (unsigned)index);
+        closeStep(10);
         status=freeBo(&request);
-        IOLog("gpu close: freeBo %u -> %x\n", (unsigned)index, uint32_t(status));
         if(status)return status;
     }
     for(uint32_t i=1;i<queue_capacity_;++i)queues_[i]=Queue{};
