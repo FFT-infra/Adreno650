@@ -778,6 +778,10 @@ IOReturn NativeAdrenoSubmit::hangCheck(bool *hung)
 {
     if(!hung)return kIOReturnBadArgument;*hung=false;
     if(!attached_ || poisoned_)return kIOReturnNotReady;
+    /* Nothing outstanding means nothing can hang: after a restart the ring's seqno equals the fence it
+     * completed, and there is no job to be stuck on. Without this the check compares the same two numbers
+     * every 500 ms and reports the same hang forever (fix49 read 338 restarts, fix50 still 171). */
+    if(!ring(0)->outstanding() && (!preemption() || !ring(1)->outstanding())) {hang_fence_=0;progress_retries_=0;return kIOReturnSuccess;}
     /* The newest submission of either ring: each ring's fence numbers rise, so the later of the two is the device's newest. */
     const uint32_t last0=ring(0)->lastSubmitted(),last1=preemption()?ring(1)->lastSubmitted():0;
     const uint32_t last=(int32_t)(last1-last0)>0?last1:last0;
