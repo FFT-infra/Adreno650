@@ -73,6 +73,9 @@ extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96+96+2+16+80];volatile 
 extern "C" volatile uint32_t native_adreno_table_switches[8];
 /* CP_WAIT_FOR_IDLE packets the board removed from client IBs before the CP saw them. */
 extern "C" volatile uint32_t native_adreno_wfi_dropped=0;   /* a defining initialiser: bare extern "C" is only a declaration */
+/* Why the drop found nothing: [0] buffers looked at, [1] no mapping for the iova, [2] mapping exists but no
+ * CPU view, [3] buffers scanned, [4] the IOReturn the last refusal returned. */
+extern "C" volatile uint32_t native_adreno_wfi_try[5]={};
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
 /* The jobs' timeline (the newest native_adreno_tl_cap retired, allocated at attach): [0] fence | indirect buffers << 32 | ring status << 58, [1] submit
@@ -463,8 +466,12 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
      * IB the CP is about to read. Counted so the log can say how often it happens. */
     for(size_t i=0;i<count;++i) {
         uint32_t patched=0;
-        if(vm_->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched)==kIOReturnSuccess)
-            native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
+        native_adreno_wfi_try[0]=native_adreno_wfi_try[0]+1;
+        const IOReturn dropped=vm_->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);
+        ++native_adreno_wfi_try[3];
+        if(dropped==kIOReturnSuccess) native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
+        else if(dropped==kIOReturnBadArgument) native_adreno_wfi_try[1]=native_adreno_wfi_try[1]+1;
+        else {native_adreno_wfi_try[2]=native_adreno_wfi_try[2]+1;native_adreno_wfi_try[4]=uint32_t(dropped);}
     }
     phase[3]=mach_absolute_time();
     static uint32_t coherence_turn;
