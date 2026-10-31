@@ -554,6 +554,27 @@ IOReturn NativeAdrenoVm::peekWords(uint64_t iova,uint32_t *out,size_t count) con
     }
     return kIOReturnBadArgument;
 }
+IOReturn NativeAdrenoVm::dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *patched)
+{
+    if(patched)*patched=0;
+    if(!attached_ || poisoned_ || !bytes)return kIOReturnBadArgument;
+    for(size_t i=0;i<high_;++i) {
+        const Mapping &m=mappings_[i];
+        if(!m.memory || iova<m.iova || iova-m.iova>=m.memory->bytes())continue;
+        void *cpu=m.memory->mapping();
+        if(!cpu)return kIOReturnUnsupported;             /* no CPU view: the caller leaves the IB alone */
+        const size_t offset=(size_t)(iova-m.iova);
+        if(offset+bytes>m.memory->bytes())return kIOReturnBadArgument;
+        volatile uint32_t *w=static_cast<volatile uint32_t *>(cpu)+offset/4;
+        const size_t count=bytes/4;
+        for(size_t k=0;k<count;++k) {
+            if(w[k]==UINT32_C(0x70268000)) {w[k]=UINT32_C(0x70108000);if(patched)*patched=*patched+1;}   /* CP_NOP, type 7, no payload */
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+        return kIOReturnSuccess;
+    }
+    return kIOReturnBadArgument;
+}
 IOReturn NativeAdrenoVm::peekWordsUncached(uint64_t iova,uint32_t *out,size_t count) const
 {
     if(!out || !attached_ || poisoned_ || !count)return kIOReturnBadArgument;
