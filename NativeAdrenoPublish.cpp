@@ -75,6 +75,7 @@ enum : UInt32 {NativeAdrenoMailboxType=0xC0DE,NativeAdrenoMailboxMagic=0x4d41494
  * otherwise silent, and the boot log's msgbuf ring has already scrolled past the probe's early boot by
  * the time the log is read. [0] the step code, [1] the user client's pid, [2..5] reserved. */
 extern "C" {volatile uint32_t native_adreno_close_step[8];}
+extern "C" int proc_selfpid(void);
 extern "C" void native_adreno_close_step_set(uint32_t n) {native_adreno_close_step[0]=n; native_adreno_close_step[1]=uint32_t(proc_selfpid());}
 static inline void closeStep(uint32_t n) {native_adreno_close_step_set(n);}
 namespace {
@@ -647,7 +648,7 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
              * the self-test's WaitFence cost 3 us against a 2 s request ([gpu methods] 6:2/1/3us),
              * and its "fence never completed" was this break, not the GPU. Wait the pause out
              * instead; the deadline is still the caller's. */
-            if(!g.clock.idle) {IOSleep(0,100);continue;}
+            if(!g.clock.idle) {delay_for_interval(100,NSEC_PER_USEC);continue;}
             if(g.clock.idle(g.clock.cookie)) {
                 if(!polled) {
                     lockTimed(lockWait);
