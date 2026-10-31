@@ -362,9 +362,7 @@ IOReturn NativeAdrenoMemory::release()
          * and the free path takes the kernel map lock, which is the one lock order this file does
          * not control. One round leaks it instead: a self-test-sized buffer, and the rest of the
          * close tells whether everything behind it works. */
-        /* One diagnostic round: the descriptor is dropped without freeing it, so the rest of the
-         * close can be observed. native_adreno_close_step[6] counts the leaks. */
-        ++native_adreno_close_step[6]; descriptor_=nullptr;
+        descriptor_->release();descriptor_=nullptr;
         native_adreno_close_step_set(36);
         native_adreno_trace_stage=34;
     }
