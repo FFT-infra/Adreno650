@@ -64,7 +64,7 @@ extern "C" {volatile uint32_t native_adreno_unstick[15];}
 /* The IBs of the last submissions: [slot] fence, iova low/high, bytes, then the first 28 dwords of the first IB (read as the kernel maps it). */
 /* [0] fence, [1..2] the submission's iova, [3] its bytes, [4..5] the MAPPING's iova the handle resolves to (the
  * base the buffer sits in, so a nonzero [1] minus [4] says the IB starts inside its mapping), [6..33] the head. */
-extern "C" {volatile uint32_t native_adreno_ib_log[4][6+28];volatile uint32_t native_adreno_ib_log_count;}
+extern "C" {volatile uint32_t native_adreno_ib_log[4][6+96];volatile uint32_t native_adreno_ib_log_count;}
 extern "C" volatile uint32_t native_adreno_table_switches[8];
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern "C" {volatile uint32_t native_adreno_recover_trace[4];}
@@ -480,8 +480,8 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
     const unsigned index=preemption()?ringForPriority():0;
     NativeAdrenoRing *const target=ring(index);
     {
-        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[28];
-        (void)vm_->peekWords(buffers[0].iova,head,28);
+        const uint32_t slot=native_adreno_ib_log_count&3;uint32_t head[96];
+        (void)vm_->peekWords(buffers[0].iova,head,96);
         native_adreno_ib_log[slot][0]=target->lastSubmitted()+1;native_adreno_ib_log[slot][1]=(uint32_t)buffers[0].iova;
         native_adreno_ib_log[slot][2]=(uint32_t)(buffers[0].iova>>32);native_adreno_ib_log[slot][3]=(uint32_t)buffers[0].bytes;
         {   /* The mapping the first buffer's handle resolves to: its base, so [1..2] - [4..5] is the buffer's offset inside it. */
@@ -489,7 +489,7 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
             (void)vm_->describe(buffers[0].handle,&base,&mapped,&permissions);
             native_adreno_ib_log[slot][4]=(uint32_t)base;native_adreno_ib_log[slot][5]=(uint32_t)(base>>32);
         }
-        for(unsigned i=0;i<28;++i)native_adreno_ib_log[slot][6+i]=head[i];
+        for(unsigned i=0;i<96;++i)native_adreno_ib_log[slot][6+i]=head[i];
         native_adreno_ib_log_count=native_adreno_ib_log_count+1;
     }
     phase[5]=mach_absolute_time();
