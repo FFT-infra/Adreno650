@@ -383,13 +383,16 @@ void AGXDeviceUserClient::dropViews(uint32_t token)
 {
     for(;;) {
         IOMemoryDescriptor *view=nullptr;
+        IOLog("gpu close: dropViews loop\n");
         IOLockLock(g.lock);
         if(token) {View *v=viewSlot(token);if(v && v->descriptor && v->token==token) {view=v->descriptor;v->descriptor=nullptr;v->token=0;}}
         else if(views_)for(size_t i=0;i<view_capacity_;++i) {View &v=views_[i];if(v.descriptor) {view=v.descriptor;v.descriptor=nullptr;v.token=0;break;}}
         IOLockUnlock(g.lock);
         if(!view)return;
+        IOLog("gpu close: dropViews unmap\n");
         /* The returned reference is the last one outside the descriptor's own list: dropping it frees the map, which unmaps the user range. */
         while(removeMappingForDescriptor(view))native_adreno_metal_diag.forced_unmaps=native_adreno_metal_diag.forced_unmaps+1;
+        IOLog("gpu close: dropViews release\n");
         view->release();
     }
 }
@@ -409,17 +412,24 @@ bool AGXDeviceUserClient::growViews(uint32_t token)
 }
 IOReturn AGXDeviceUserClient::clientClose()
 {
+    /* Step lines into msgbuf (and so the persistent log): a close that never returns is otherwise silent,
+     * and the self-test's first round stops exactly here (GPUROW24 says "SELFTEST clientClose"). */
+    IOLog("gpu close: dropViews\n");
     dropViews(0);
+    IOLog("gpu close: lock\n");
     IOLockLock(g.lock);
+    IOLog("gpu close: locked live=%u\n", live_ ? 1u : 0u);
     IOReturn status=kIOReturnSuccess;
     AGXDeviceUserClient *mailbox=nullptr;
     if(gMailboxOwner==this) {mailbox=gMailboxOwner;gMailboxOwner=nullptr;}
     if(live_) {
         const uint64_t peak=core_->windowPeak();
         status=core_->releaseAll(&g.clock,2000000);
+        IOLog("gpu close: releaseAll %x\n", uint32_t(status));
         /* The address space goes once the GPU no longer runs it: idle, and the kernel table back in the bank if it was installed. */
         if(!status && space_)status=g.submit->forgetVm(space_->vm(),&g.clock,2000000);
         if(!status && space_) {status=g.context->destroyVm(space_);if(!status)space_=nullptr;}
+        IOLog("gpu close: space done %x\n", uint32_t(status));
         /* A failed teardown leaves the objects (and the address space) live: nothing is forced or reused. */
         if(!status) {
             live_=false;
@@ -433,8 +443,10 @@ IOReturn AGXDeviceUserClient::clientClose()
             }
         }
     }
+    IOLog("gpu close: unlock %x\n", uint32_t(status));
     IOLockUnlock(g.lock);
     if(mailbox)mailbox->release();
+    IOLog("gpu close: done %x\n", uint32_t(status));
     if(!status)terminate();
     return status;
 }
