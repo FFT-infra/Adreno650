@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "NativeAdrenoMemory.h"
+extern "C" void native_adreno_close_step_set(uint32_t);
 /* Where a call that never returns is stuck: the free/unmap/release path stores a stage number here, the board page shows it. */
 extern "C" {volatile uint32_t native_adreno_trace_stage;}
 #include <IOKit/IOBufferMemoryDescriptor.h>
@@ -351,11 +352,9 @@ IOReturn NativeAdrenoMemory::release()
             prepared_=false;
         }
         native_adreno_trace_stage=33;
-        {extern "C" void native_adreno_close_step_set(uint32_t);
-         native_adreno_close_step_set(35);}
+        native_adreno_close_step_set(35);
         descriptor_->release();descriptor_=nullptr;
-        {extern "C" void native_adreno_close_step_set(uint32_t);
-         native_adreno_close_step_set(36);}
+        native_adreno_close_step_set(36);
         native_adreno_trace_stage=34;
     }
     if(owned_) {noteOwned(spans_,span_count_,false);owned_=false;}
