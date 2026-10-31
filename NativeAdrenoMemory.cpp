@@ -351,10 +351,10 @@ IOReturn NativeAdrenoMemory::release()
             prepared_=false;
         }
         native_adreno_trace_stage=33;
-        {extern void native_adreno_close_step_set(uint32_t);
+        {extern "C" void native_adreno_close_step_set(uint32_t);
          native_adreno_close_step_set(35);}
         descriptor_->release();descriptor_=nullptr;
-        {extern void native_adreno_close_step_set(uint32_t);
+        {extern "C" void native_adreno_close_step_set(uint32_t);
          native_adreno_close_step_set(36);}
         native_adreno_trace_stage=34;
     }
