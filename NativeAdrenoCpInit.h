@@ -35,6 +35,10 @@ public:
     IOReturn run(const NativeAdrenoRingIo *,NativeAdrenoRing *,
         const NativeAdrenoCpInitConfig *,uint32_t *fence,bool fenced=true);
     bool completed() const {return done_;}
+    /* A GPU restart puts the CP back at reset, so CP_ME_INIT must be sent again: a6xx_recover() runs
+     * a6xx_hw_init() and a6xx_cp_init() exactly as the first bring-up did. done_ was one-shot, which
+     * made every restart fail at CP_ME_INIT with kIOReturnNotReady ([gpu restart step] 3). */
+    void reopen() {done_=false;poisoned_=false;}
     bool poisoned() const {return poisoned_;}
     static uint32_t meInitMask();
 };
