@@ -874,7 +874,10 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
     IOReturn status=restart(cookie,ring(0),hung);
     out->status=status;
     if(status) {native_adreno_recover_trace[0]=2;native_adreno_recover_trace[1]=uint32_t(status);return poison();}
-    poisoned_=false;hang_fence_=hung;progress_retries_=0;
+    /* After the restart the GPU is idle with nothing outstanding, so there is no fence to be stuck on:
+     * hang_fence_ must start over, or the very next check compares against the hung fence again and reports
+     * the same hang forever (fix49 read hangs=338 restarts=338 in 176 s, one every 500 ms). */
+    poisoned_=false;hang_fence_=0;progress_retries_=0;
     if(guilty) {status=release(*guilty);if(status)return status;}
     /* The GPU is idle after the restart's CP init: the CPU installs the kernel table, and each replayed job switches to its own. */
     if(table_mode_) {
