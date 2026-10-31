@@ -910,6 +910,9 @@ IOReturn NativeAdrenoSubmit::recover(NativeAdrenoRestart restart,void *cookie,co
      * so a replayed submission's fence is seqno_+1 whatever the job's original number was. Match the job
      * by its own fence and accept the ring's value: the two agree only when no submission happened between
      * the hung job and the restart, and that is not the case here (fix47/48 both read value=8 for next=6). */
+    /* A job whose IB the GPU already stopped on is not replayed: it is what hung the ring, and replaying it
+     * hangs the ring again. fix51 read hangs=169 restarts=169 with the fence climbing 173..175 in 176 s --
+     * each restart replayed the same bad submission and the next check found the same hang. */
     for(uint32_t next=hung+1;next && next<=replayLast;++next) {
         Job *job=find(next);
         NativeAdrenoVm *vm=job && job->vm?job->vm:vm_;
