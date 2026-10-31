@@ -635,7 +635,13 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
                 if(status!=kIOReturnTimeout || waited>=timeout_us)break;
             } else native_adreno_wait_outer[4]=native_adreno_wait_outer[4]+1;
             native_adreno_wait_outer[2]=native_adreno_wait_outer[2]+1;
-            if(!g.clock.idle || g.clock.idle(g.clock.cookie)) {
+            /* The pause between polls. A board that supplies no idle callback used to end the wait
+             * here, so every fence that was not already complete returned a timeout after one poll:
+             * the self-test's WaitFence cost 3 us against a 2 s request ([gpu methods] 6:2/1/3us),
+             * and its "fence never completed" was this break, not the GPU. Wait the pause out
+             * instead; the deadline is still the caller's. */
+            if(!g.clock.idle) {IOSleep(0,100);continue;}
+            if(g.clock.idle(g.clock.cookie)) {
                 if(!polled) {
                     lockTimed(lockWait);
                     status=connection->live_?connection->core_->dispatch(method,&poll,sizeof(poll),output,output_size,&g.clock):kIOReturnNotReady;
