@@ -486,7 +486,7 @@ IOReturn NativeAdrenoSubmit::submit(NativeAdrenoVm *vm,const NativeAdrenoSubmitB
         uint32_t patched=0;
         native_adreno_wfi_try[0]=native_adreno_wfi_try[0]+1;
         const IOReturn dropped=vm_->dropWaitForIdle(buffers[i].iova,buffers[i].bytes,&patched);
-        ++native_adreno_wfi_try[3];
+        native_adreno_wfi_try[3]=native_adreno_wfi_try[3]+1;
         if(dropped==kIOReturnSuccess) native_adreno_wfi_dropped=native_adreno_wfi_dropped+patched;
         else if(dropped==kIOReturnBadArgument) native_adreno_wfi_try[1]=native_adreno_wfi_try[1]+1;
         else {native_adreno_wfi_try[2]=native_adreno_wfi_try[2]+1;native_adreno_wfi_try[4]=uint32_t(dropped);}
