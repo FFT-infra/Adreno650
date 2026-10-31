@@ -574,24 +574,32 @@ IOReturn NativeAdrenoVm::dropWaitForIdle(uint64_t iova,size_t bytes,uint32_t *pa
             __asm__ volatile("dsb sy" ::: "memory");
             return kIOReturnSuccess;
         }
-        /* No CPU view (a client BO the client maps itself): translate through this VM's own tables and write
-         * the page directly. One page at a time, cleaned to the point of coherency after the write so the CP
-         * reads what was written. */
+        /* No CPU view (a client BO the client maps itself): write through the BO's own physical spans and
+         * clean to the point of coherency, so the CP reads what was written. The spans come from the
+         * memory object, not from leafPhysical: that one walks each table page looking for the entry whose
+         * PHYSICAL address equals its argument, i.e. it answers "which leaf points at this page", and
+         * handing it a virtual address can only ever fail. */
+        const NativeAdrenoPhysicalSpan *spans=m.memory->spans();
+        const size_t spanCount=m.memory->spanCount();
         for(size_t done=0;done<bytes;) {
-            const uint64_t va=iova+done, page=va&~UINT64_C(0xfff);
-            const size_t inPage=(size_t)(va-page);
-            const size_t take=bytes-done<4096-inPage?bytes-done:4096-inPage;
+            const size_t at=offset+done;
             uint64_t pa=0;
-            if(!leafPhysical(page,&pa))return kIOReturnNotReady;   /* mapping found, no leaf to translate it */
+            for(size_t i=0;i<spanCount;++i) {
+                const NativeAdrenoPhysicalSpan &sp=spans[i];
+                if(at>=sp.offset && at-sp.offset<sp.bytes) {pa=sp.physical+(at-sp.offset);break;}
+            }
+            if(!pa)return kIOReturnNotReady;   /* no span covers this offset */
             IODeviceMemory *dev=IODeviceMemory::withRange(pa,0x1000);
             if(!dev)return kIOReturnNoMemory;
             IOMemoryMap *map=dev->map(kIOMapAnywhere|kIOMapWriteCombineCache);
             dev->release();
             if(!map)return kIOReturnNoMemory;
             volatile uint32_t *w=reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
+            const size_t inPage=(size_t)(pa&0xfffu);
+            const size_t take=bytes-done<4096-inPage?bytes-done:4096-inPage;
             for(size_t k=0;k<take/4;++k) {
-                const size_t at=inPage/4+k;
-                if(w[at]==kWaitForIdle) {w[at]=kNop;if(patched)*patched=*patched+1;}
+                const size_t word=inPage/4+k;
+                if(w[word]==kWaitForIdle) {w[word]=kNop;if(patched)*patched=*patched+1;}
             }
             __asm__ volatile("dsb sy" ::: "memory");
             map->release();
