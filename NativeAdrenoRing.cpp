@@ -3,6 +3,7 @@
 #include "AdrenoPM4.h"
 #include "NativeAdrenoPreempt.h"
 #include <IOKit/IOLib.h>
+#include <pexpert/pexpert.h>
 
 /* Values are taken from the pinned Linux source, not guessed:
  * drivers/gpu/drm/msm/registers/adreno/a6xx.xml (register offsets), and
@@ -100,7 +101,11 @@ enum : uint32_t {
     RingA6xxCcuInvalidateDepth = 0x18,
     RingA6xxCcuInvalidateColor = 0x19,
     RingA6xxCacheInvalidate = 0x31,
-    RingA6xxPrologueWords = 6,
+    /* CP_SET_PROTECTED_MODE (adreno_pm4.xml:377, value 0x5f). Mainline sends it unconditionally on every non-A7XX/non-A8XX
+     * submit: 0 before the special-register writes, 1 again at the end (a6xx_gpu.c:279-284 and :350-357). Our A6xx path
+     * never sent it at all, so CP_PROTECT_CNTL's spans were live for the whole submission. */
+    RingSetProtectedMode = 0x5f,
+    RingA6xxPrologueWords = 19,   /* a6xx_set_pagetable()'s first-submission entry plus a6xx_submit()'s two CCU invalidates */
     RingNoUpdate = 1u << 27
 };
 static uint32_t ilog2(size_t value)
@@ -146,6 +151,14 @@ IOReturn NativeAdrenoRing::writeWptr(uint32_t value)
 }
 IOReturn NativeAdrenoRing::readRptr(uint32_t *value)
 {
+    /* a6xx_get_rptr (a6xx_gpu.c:2396-2404): on a part with hardware APRIV the CP_RB_RPTR register
+     * is not the authority, the shadow the CP writes into the memptrs page is. This board's A650
+     * has ADRENO_QUIRK_HAS_HW_APRIV (a6xx_catalog.c:1061), so read the shadow. */
+    if(fence_ && generation_==6) {
+        const uint32_t shadow=fence_[0];
+        if(shadow>=ring_bytes_/4)return poison(); /* unusable read pointer */
+        *value=shadow;rptr_shadow_=shadow;return kIOReturnSuccess;
+    }
     uint32_t rptr=0;
     /* A secondary ring has no CP_RB_RPTR of its own: the CP keeps its read pointer in the ring's record, whose rptr shadow the CP
      * writes to msm_rbmemptrs.rptr (the fence page's first word, the address the record names) whenever it switches away. */
@@ -222,9 +235,23 @@ IOReturn NativeAdrenoRing::emitA6xxPrologue(uint32_t at,uint32_t *end)
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingA6xxPrologueWords]={0};
     const uint32_t uche=RingA6xxCacheInvalidate,depth=RingA6xxCcuInvalidateDepth,color=RingA6xxCcuInvalidateColor;
-    size_t n=packet(words,0,RingFenceOpcode,&uche,1);
-    if(n)n=packet(words,n,RingFenceOpcode,&depth,1);
-    if(n)n=packet(words,n,RingFenceOpcode,&color,1);
+    /* The FIRST submission runs a6xx_set_pagetable() in full (a6xx_gpu.c:286-348), because the submitting
+     * context is not yet current. In mainline's order: protected mode off, the perfcounter SRAM init, the
+     * table update, the memptr write, the UCHE invalidate, then the wait for the SRAM to clear. The two CCU
+     * invalidates a6xx_submit() sends follow. fix65 and fix66 measured both halves separately; this is the
+     * whole entry, which is what a first submission actually carries. */
+    const uint32_t off=0,on=1,sramInit=1;
+    const uint32_t sram[6]={3,0x050f,0,1,1,0};   /* CP_WAIT_REG_MEM WRITE_EQ on RBBM_PERFCTR_SRAM_INIT_STATUS bit0 */
+    size_t n=packet(words,0,RingSetProtectedMode,&off,1);
+    /* RBBM_PERFCTR_SRAM_INIT_CMD is a TYPE4 register write (mainline uses OUT_PKT4), not TYPE7: its register
+     * number 0x050e is above the 7-bit TYPE7 opcode range, so packet() would refuse it and poison the ring.
+     * The A7XX path below already builds it with AdrenoPM4Type4. */
+    if(n && AdrenoPM4Type4(RingPerfctrSramInit,1,&words[n])==AdrenoPM4Success) {words[n+1]=sramInit;n+=2;} else n=0;
+    if(n)n=packet(words,n,RingFenceOpcode,&uche,1);                  /* CACHE_INVALIDATE (UCHE) */
+    if(n)n=packet(words,n,RingSetProtectedMode,&on,1);
+    if(n)n=packet(words,n,RingFenceOpcode,&depth,1);                 /* PC_CCU_INVALIDATE_DEPTH */
+    if(n)n=packet(words,n,RingFenceOpcode,&color,1);                 /* PC_CCU_INVALIDATE_COLOR */
+    if(n)n=packet(words,n,RingWaitRegMem,sram,6);                    /* wait for the SRAM clear */
     if(n!=RingA6xxPrologueWords)return poison();
     for(uint32_t i=0;i<RingA6xxPrologueWords;++i)ring_[(at+i)&mask]=words[i];
     *end=(at+RingA6xxPrologueWords)&mask;return kIOReturnSuccess;
@@ -449,11 +476,22 @@ IOReturn NativeAdrenoRing::program()
 {
     /* A6xx sets NO_UPDATE (bit 27): without CP_APRIV the CP may not write the RPTR shadow (a6xx_hw_init). A7XX does not need it,
      * because that ring's prologue keeps the shadow in step by other means. */
-    const uint32_t control=control_?control_:(uint32_t)(ilog2(ring_bytes_/8)&0x3f)|(ilog2(RingBlockBytes/8)<<8)|(generation_==6?RingNoUpdate:0);
+    /* fix63: pipa-gpu-no-no-update=1 clears bit 27, which is what mainline does for an A650
+     * (a6xx_catalog.c has ADRENO_QUIRK_HAS_HW_APRIV for 0x06050002, and a6xx_hw_init only sets
+     * NO_UPDATE when hw_apriv is absent). One round says whether the shadow RPTR is what the CP
+     * is waiting on. */
+    unsigned noUpdate = 1;
+    PE_parse_boot_argn("pipa-gpu-no-update", &noUpdate, sizeof noUpdate);
+    const uint32_t control=control_?control_:(uint32_t)(ilog2(ring_bytes_/8)&0x3f)|(ilog2(RingBlockBytes/8)<<8)|
+        (generation_==6 && noUpdate?RingNoUpdate:0);
     const uint32_t base_lo=(uint32_t)ring_iova_,base_hi=(uint32_t)(ring_iova_>>32);
     const uint32_t rptr_lo=(uint32_t)fence_iova_,rptr_hi=(uint32_t)(fence_iova_>>32);
+    /* CP_RB_WPTR is deliberately NOT written here. Mainline never zeroes it: every write to it
+     * is a fenced write of a computed wptr (a6xx_flush, a6xx_gpu.c:168-196). Writing 0 leaves the
+     * CP with nothing to fetch and its SQE parks in the packet-collection loop, which is exactly
+     * what fix63's shadow RPTR (0x30, two packets behind) and its PC (0xaa, waitin) showed. */
     const uint32_t writes[]={RingBase,base_lo,RingBase+1,base_hi,RingControl,control,
-        RingRptrAddress,rptr_lo,RingRptrAddress+1,rptr_hi,RingWptr,0,RingScratch,0};
+        RingRptrAddress,rptr_lo,RingRptrAddress+1,rptr_hi,RingScratch,0};
     for(size_t i=0;i<sizeof(writes)/sizeof(writes[0]);i+=2)
         if(io_.write32(io_.cookie,writes[i],writes[i+1]))return poison();
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);

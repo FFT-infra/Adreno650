@@ -78,7 +78,7 @@ int main()
         CHECK(attach(r)==kIOReturnSuccess);
         const uint32_t expected[][2]={
             {0x0800,0x100000},{0x0801,0},{0x0802,(12u)|(2u<<8)},
-            {0x0804,0x108000},{0x0805,0},{0x0807,0},{0x0885,0}};
+            {0x0804,0x108000},{0x0805,0},{0x0885,0}};
         CHECK(peer.writes.size()==sizeof(expected)/sizeof(expected[0]));
         for(size_t i=0;i<peer.writes.size();++i)
             CHECK(peer.writes[i].first==expected[i][0] && peer.writes[i].second==expected[i][1]);
@@ -309,27 +309,31 @@ int main()
         CHECK(r.setGeneration(6)==kIOReturnSuccess && r.generation()==6);
         CHECK(attach(r)==kIOReturnSuccess);
         /* Same register order as A7XX; CP_RB_CNTL (0x0802) carries NO_UPDATE (bit 27) as a6xx_hw_init writes it. */
+        /* CP_RB_WPTR (0x0807) is not written: mainline never zeroes it (a6xx_flush writes a computed wptr). */
         const uint32_t expected[][2]={
             {0x0800,0x100000},{0x0801,0},{0x0802,(12u)|(2u<<8)|(1u<<27)},
-            {0x0804,0x108000},{0x0805,0},{0x0807,0},{0x0885,0}};
+            {0x0804,0x108000},{0x0805,0},{0x0885,0}};
         CHECK(peer.writes.size()==sizeof(expected)/sizeof(expected[0]));
         for(size_t i=0;i<peer.writes.size();++i)
             CHECK(peer.writes[i].first==expected[i][0] && peer.writes[i].second==expected[i][1]);
-        /* A framed submission: six prologue words (UCHE invalidate, CCU depth, CCU color), the payload, then the plain fence. */
+        /* A framed submission: nineteen prologue words, the payload, then the plain fence. */
         const uint32_t words[4]={0x11111111,0x22222222,0x33333333,0x44444444};
         uint32_t end=0;
         CHECK(r.submitFramed(words,4,&end)==kIOReturnSuccess);
-        /* Three CP_EVENT_WRITE (0x46) packets of one dword, two words each: the six-word prologue. 0x31, 0x18 and 0x19 are
-         * the event values in the payload, not opcodes; the header is Type7 with count 1. */
-        CHECK(ring[0]==0x70460001u && ring[1]==0x31);    /* CACHE_INVALIDATE (UCHE) */
-        CHECK(ring[2]==0x70460001u && ring[3]==0x18);    /* PC_CCU_INVALIDATE_DEPTH */
-        CHECK(ring[4]==0x70460001u && ring[5]==0x19);    /* PC_CCU_INVALIDATE_COLOR */
-        CHECK(ring[6]==0x11111111u && ring[9]==0x44444444u);
+        /* a6xx_set_pagetable()'s first-submission entry, then a6xx_submit()'s two CCU invalidates. */
+        CHECK(ring[0]==0x705f0001u && ring[1]==0u);      /* CP_SET_PROTECTED_MODE 0 */
+        CHECK(ring[2]==0x40050e01u && ring[3]==1u);      /* Type4 RBBM_PERFCTR_SRAM_INIT_CMD = 1 */
+        CHECK(ring[4]==0x70460001u && ring[5]==0x31);    /* CACHE_INVALIDATE (UCHE) */
+        CHECK(ring[6]==0x705f0001u && ring[7]==1u);      /* CP_SET_PROTECTED_MODE 1 */
+        CHECK(ring[8]==0x70460001u && ring[9]==0x18);    /* PC_CCU_INVALIDATE_DEPTH */
+        CHECK(ring[10]==0x70460001u && ring[11]==0x19);  /* PC_CCU_INVALIDATE_COLOR */
+        CHECK(ring[12]==0x70bc8006u && ring[13]==3u);    /* CP_WAIT_REG_MEM WRITE_EQ on 0x050f bit0 */
+        CHECK(ring[19]==0x11111111u && ring[22]==0x44444444u);
         /* The fence is emitFence(), not the A7XX BV-thread form: CP_SCRATCH(2) = seqno (a Type4 write), then one
          * CP_EVENT_WRITE of four dwords whose event is CACHE_FLUSH_TS (0x04) with IRQ (bit 31), its address and the seqno. */
-        CHECK(ring[10]==0x48088501u && ring[11]==1u);
-        CHECK(ring[12]==0x70460004u && ring[13]==(0x04u|(1u<<31)));
-        CHECK(ring[14]==0x00108004u && ring[15]==0u && ring[16]==1u);
+        CHECK(ring[23]==0x48088501u && ring[24]==1u);
+        CHECK(ring[25]==0x70460004u && ring[26]==(0x04u|(1u<<31)));
+        CHECK(ring[27]==0x00108004u && ring[28]==0u && ring[29]==1u);
         /* submitFramed's third argument is the fence number it assigned, and the submission is outstanding until it retires. */
         CHECK(end==1 && r.outstanding()==1);
     }
