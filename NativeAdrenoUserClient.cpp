@@ -10,7 +10,9 @@
 #ifndef PRIO_DARWIN_GPU_UTILITY
 #define PRIO_DARWIN_GPU_UTILITY 3
 #endif
-extern "C" int32_t task_get_gpu_role(task_t) __attribute__((weak));
+extern "C" __attribute__((weak)) int32_t task_get_gpu_role(task_t) {
+    return 0;
+}
 extern "C" volatile uint32_t native_adreno_trace_stage;
 /* 0 keeps user BOs cacheable and maintained before every submission (int-070..097); the board sets it from the sheng-gpu-wc boot argument. */
 /* sheng-gpu-owned-coherent=1: the GPU's own BOs use the IO-coherent path (CPU write-back view, GPU write-back inner-shareable mapping) instead of
@@ -402,7 +404,7 @@ extern "C" uint64_t native_adreno_now_us(void) __attribute__((weak));
 int32_t NativeAdrenoUserClient::submitPriority() const
 {
     if(priority_foreground_<0 && priority_background_<0)return -1;
-    const int32_t role=&task_get_gpu_role?task_get_gpu_role(current_task()):0;
+    const int32_t role=task_get_gpu_role(current_task());
     const bool background=role==PRIO_DARWIN_GPU_BACKGROUND || role==PRIO_DARWIN_GPU_UTILITY;
     return background?(priority_background_>=0?priority_background_:priority_foreground_)
                      :(priority_foreground_>=0?priority_foreground_:priority_background_);
@@ -416,7 +418,7 @@ IOReturn NativeAdrenoUserClient::setPriority(uint32_t foreground,uint32_t backgr
     {
         const uint32_t n=native_adreno_prio_count;
         volatile uint32_t *row=native_adreno_prio_log[n&31];
-        row[0]=uint32_t(proc_selfpid());row[1]=foreground;row[2]=background;row[3]=&task_get_gpu_role?uint32_t(task_get_gpu_role(current_task())):0;
+        row[0]=uint32_t(proc_selfpid());row[1]=foreground;row[2]=background;row[3]=uint32_t(task_get_gpu_role(current_task()));
         row[4]=&native_adreno_now_us?uint32_t(native_adreno_now_us()/1000):0;row[5]=priority_told_;
         native_adreno_prio_count=n+1;
         if(priority_told_<0xffffffffu)++priority_told_;
@@ -453,7 +455,7 @@ IOReturn NativeAdrenoUserClient::submit(const NativeAdrenoAbiSubmit *request,
     ring_->useContext(context_);
     submit_->nextOwner(proc_selfpid());
     submit_->nextPriority(submitPriority());
-    submit_->nextRole(&task_get_gpu_role?task_get_gpu_role(current_task()):0);
+    submit_->nextRole(task_get_gpu_role(current_task()));
     const IOReturn status=submit_->submit(vm_,buffers,request->buffer_count,
         queue_base_+request->queue,&fence,clock);
     /* Per client: how much GPU work this process actually submits. Without it, [gpu clients] shows that a process opened the device
