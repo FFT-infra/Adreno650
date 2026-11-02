@@ -74,7 +74,7 @@ class NativeAdrenoRing final {
     IOReturn emitFramedFence(uint32_t at,uint32_t seqno,uint32_t *end);
     IOReturn submitWords(const uint32_t *words,size_t word_count,uint32_t *fence,bool framed);
     IOReturn program();
-    IOReturn emitA6xxPrologue(uint32_t at,uint32_t *end);
+    IOReturn emitA6xxPrologue(uint32_t at,bool reset,uint32_t *end);
 public:
     NativeAdrenoRing()=default;
     /* The core generation this ring drives, 6 or 7 (7 is the default). Only before attach(): the value decides the ring's register

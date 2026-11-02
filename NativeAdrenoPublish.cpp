@@ -121,15 +121,19 @@ extern "C" volatile uint32_t native_adreno_trace_stage;
 extern "C" {
 /* One entry per IOServiceOpen of the accelerator (not markers): who, which type, what the two sandbox gates said. */
 struct NativeAdrenoOpenRecord {char name[20]; uint32_t type, macf, res, attach, foreign;};
-struct NativeAdrenoOpenRecord native_adreno_open_log[8];
+/* 16, not 8: a desktop boot now runs more than eight Metal processes (mediaserverd, backboardd, SpringBoard, WidgetRenderer,
+ * PhotosPosterProvider, PosterBoard, AegirPoster, CollectionsPoster, ...). At 8 the wallpaper extension fell off the end and
+ * every row that reads this log said it had never opened -- which is what sent fix125..128 after the wrong process. */
+struct NativeAdrenoOpenRecord native_adreno_open_log[16];
 volatile uint32_t native_adreno_open_log_count;
 /* One row per process name that opened the plugin type (first eight names): opens granted, refused (sandbox, or no address space),
  * closes, the board log row of its live connection (4 the shared row, 0xff none), the highest GPU address its mappings reached (MiB) and its last refusal. */
 struct NativeAdrenoClientRecord {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
-struct NativeAdrenoClientRecord native_adreno_client_log[8];
+struct NativeAdrenoClientRecord native_adreno_client_log[16];  /* see native_adreno_open_log above */
 /* The last text line (the plugin's failure reason) each process other than the render server streamed: process name and a 64-byte line. */
 struct NativeAdrenoClientText {char name[20]; char text[64];};
 struct NativeAdrenoClientText native_adreno_client_text[8];
+extern "C" {volatile uint32_t native_adreno_metal_marks[17];}
 /* Why the latest mount of a connection failed: [0] 1 no address space, 2 the core's open, 3 the window scope; [1] its IOReturn; [2] the queue base; [3] failures so far. */
 volatile uint32_t native_adreno_mount_fail[4];
 /* Processes that read MetalPluginName (the Metal discovery), first twelve names, with counts. */
@@ -510,7 +514,14 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
     NativeAdrenoMemory *backing=live_?core_->memoryForToken(type):nullptr;
     if(backing && backing->system() && backing->descriptor() && v && !v->descriptor) {
         /* System memory: the view maps the BO's own descriptor, its VM object, as Metal's resources are mapped into their process. The
-         * pages keep the object's attribute (no device-pager view sets them back, int-160) and live while the view does. */
+         * pages keep the object's attribute (no device-pager view sets them back, int-160) and live while the view does.
+         *
+         * kIOMapAnywhere, not kIOMapWriteCombineCache. The porting guide's rule is "the client view maps the BO's own descriptor" and
+         * "the VM sets the write-combined attribute once, batched" (drivers/adreno740.md, 内存与 TLB) -- the attribute is the VM's
+         * job, not the view's. fix127 gave the view kIOMapWriteCombineCache to match the pages and the GPU stopped inside its first
+         * IB (GPUROW26 HANG st00800005 ib1 0x101cb3000, rbbm 00800005, busy 999): a write-combined CPU view does not publish
+         * the command words the way the CP's non-cacheable fetch expects. The allocation-time clean in NativeAdrenoMemory::
+         * allocateSystem is what makes the zero fill visible to the GPU; the view's own cache mode stays XNU's default. */
         IOMemoryDescriptor *descriptor=backing->descriptor();
         descriptor->retain();v->token=type;v->descriptor=descriptor;
         descriptor->retain();*memory=descriptor;
@@ -890,6 +901,11 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
         }
         native_adreno_metal_diag.marks[slot]=value;
         native_adreno_metal_diag.marks_total=native_adreno_metal_diag.marks_total+1;
+        /* Mirror for the boot log: [0] the total, [1..16] the newest ring of markers. BootLog.c cannot carry this struct (it is
+         * defined here in full), and a process that reads MetalPluginName but never opens the device can only be described by
+         * where the plugin stopped -- which is exactly what the wallpaper extension does. */
+        native_adreno_metal_marks[0]=native_adreno_metal_diag.marks_total;
+        for(unsigned i=0;i<16;++i)native_adreno_metal_marks[1+i]=native_adreno_metal_diag.marks[i];
         if(value==1) {
             memcpy(native_adreno_metal_diag.starter[2],native_adreno_metal_diag.starter[1],17);
             memcpy(native_adreno_metal_diag.starter[1],native_adreno_metal_diag.starter[0],17);
@@ -940,7 +956,7 @@ extern "C" IOReturn native_adreno_new_user_client(IOService *provider,task_t own
     native_adreno_metal_diag.chk_macf=macf;
     native_adreno_metal_diag.chk_res=resolver;
     {
-        NativeAdrenoOpenRecord &record=native_adreno_open_log[native_adreno_open_log_count&7];
+        NativeAdrenoOpenRecord &record=native_adreno_open_log[native_adreno_open_log_count&15];
         proc_selfname(record.name,sizeof(record.name));
         record.type=type;record.macf=macf;record.res=resolver;record.attach=attach_state;record.foreign=type!=NativeAdrenoPluginOpenType;
         native_adreno_open_log_count=native_adreno_open_log_count+1;

@@ -83,7 +83,8 @@ enum : uint32_t {
      * submit: 0 before the special-register writes, 1 again at the end (a6xx_gpu.c:279-284 and :350-357). Our A6xx path
      * never sent it at all, so CP_PROTECT_CNTL's spans were live for the whole submission. */
     RingSetProtectedMode = 0x5f,
-    RingA6xxPrologueWords = 19,   /* a6xx_set_pagetable()'s first-submission entry plus a6xx_submit()'s two CCU invalidates */
+    RingA6xxPrologueWords = 19,   /* a6xx_set_pagetable()'s entry plus a6xx_submit()'s two CCU invalidates */
+    RingA6xxCcuWords = 4,         /* just the two CCU invalidates, 2 dwords each: what a submission without a table switch carries */
     RingNoUpdate = 1u << 27
 };
 static uint32_t ilog2(size_t value)
@@ -200,35 +201,48 @@ static size_t stamp(uint32_t *words,size_t at,uint64_t fence_iova,uint32_t seqno
 /* a6xx_submit()'s prologue: an A6xx core has one CP thread and one page table, so there is no thread selection and no context entry.
  * What it sends is the UCHE invalidate a6xx_set_pagetable() ends with (CACHE_INVALIDATE 0x31) and the two CCU invalidates
  * a6xx_submit() puts before the IBs (PC_CCU_INVALIDATE_DEPTH 0x18, _COLOR 0x19), each as its own CP_EVENT_WRITE. Six words. */
-IOReturn NativeAdrenoRing::emitA6xxPrologue(uint32_t at,uint32_t *end)
+IOReturn NativeAdrenoRing::emitA6xxPrologue(uint32_t at,bool reset,uint32_t *end)
 {
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingA6xxPrologueWords]={0};
     const uint32_t uche=RingA6xxCacheInvalidate,depth=RingA6xxCcuInvalidateDepth,color=RingA6xxCcuInvalidateColor;
-    /* The FIRST submission runs a6xx_set_pagetable() in full (a6xx_gpu.c:286-348), because the submitting
-     * context is not yet current. In mainline's order: protected mode off, the perfcounter SRAM init, the
-     * table update, the memptr write, the UCHE invalidate, then the wait for the SRAM to clear. The two CCU
-     * invalidates a6xx_submit() sends follow. fix65 and fix66 measured both halves separately; this is the
-     * whole entry, which is what a first submission actually carries. */
-    const uint32_t off=0,on=1,sramInit=1;
-    const uint32_t sram[6]={3,0x050f,0,1,1,0};   /* CP_WAIT_REG_MEM WRITE_EQ on RBBM_PERFCTR_SRAM_INIT_STATUS bit0 */
-    size_t n=packet(words,0,RingSetProtectedMode,&off,1);
-    /* RBBM_PERFCTR_SRAM_INIT_CMD is a TYPE4 register write (mainline uses OUT_PKT4), not TYPE7: its register
-     * number 0x050e is above the 7-bit TYPE7 opcode range, so packet() would refuse it and poison the ring.
-     * The A7XX path below already builds it with AdrenoPM4Type4. */
-    if(n && AdrenoPM4Type4(RingPerfctrSramInit,1,&words[n])==AdrenoPM4Success) {words[n+1]=sramInit;n+=2;} else n=0;
-    if(n)n=packet(words,n,RingFenceOpcode,&uche,1);                  /* CACHE_INVALIDATE (UCHE) */
-    if(n)n=packet(words,n,RingSetProtectedMode,&on,1);
-    if(n)n=packet(words,n,RingFenceOpcode,&depth,1);                 /* PC_CCU_INVALIDATE_DEPTH */
+    /* a6xx_set_pagetable() runs only when the submitting context is not the ring's current one -- mainline's first line is
+     *     if (ctx->seqno == ring->cur_ctx_seqno) return;
+     * (reference/repo/linux-mainline/.../a6xx_gpu.c:244-245). What it carries is the perfcounter SRAM init, the table update, the
+     * memptr write, the UCHE invalidate and a CP_WAIT_REG_MEM for the SRAM to clear. The two CCU invalidates a6xx_submit() sends
+     * follow it on every submission.
+     *
+     * This used to send the whole entry every time, SRAM wait included. fix123 showed what that costs: the first self-test round
+     * read tgt1 = deadbeef deadbeef deadbeef (the CP executed nothing) while the second read all three markers, because the first
+     * submission parked in the SRAM wait instead of running its IB. `reset` is reset_pending_, which useContext() raises when the
+     * context actually changes, so it is exactly mainline's condition. */
+    size_t n=0;
+    if(reset) {
+        const uint32_t off=0,on=1,sramInit=1;
+        const uint32_t sram[6]={3,0x050f,0,1,1,0};   /* CP_WAIT_REG_MEM WRITE_EQ on RBBM_PERFCTR_SRAM_INIT_STATUS bit0 */
+        n=packet(words,0,RingSetProtectedMode,&off,1);
+        /* RBBM_PERFCTR_SRAM_INIT_CMD is a TYPE4 register write (mainline uses OUT_PKT4), not TYPE7: its register
+         * number 0x050e is above the 7-bit TYPE7 opcode range, so packet() would refuse it and poison the ring. */
+        if(n && AdrenoPM4Type4(RingPerfctrSramInit,1,&words[n])==AdrenoPM4Success) {words[n+1]=sramInit;n+=2;} else n=0;
+        if(n)n=packet(words,n,RingFenceOpcode,&uche,1);              /* CACHE_INVALIDATE (UCHE) */
+        if(n)n=packet(words,n,RingSetProtectedMode,&on,1);
+        if(n)n=packet(words,n,RingWaitRegMem,sram,6);                /* wait for the SRAM clear */
+    }
+    /* The two CCU invalidates: a6xx_submit() sends them before the IBs on every submission, not only on a table switch.
+     * packet() answers 0 only when the header cannot be built, so the guard is "nothing failed yet", not "something was written":
+     * with n starting at 0 a plain submission would skip both packets and then fail the count check, poisoning the ring. */
+    n=packet(words,n,RingFenceOpcode,&depth,1);                      /* PC_CCU_INVALIDATE_DEPTH */
     if(n)n=packet(words,n,RingFenceOpcode,&color,1);                 /* PC_CCU_INVALIDATE_COLOR */
-    if(n)n=packet(words,n,RingWaitRegMem,sram,6);                    /* wait for the SRAM clear */
-    if(n!=RingA6xxPrologueWords)return poison();
-    for(uint32_t i=0;i<RingA6xxPrologueWords;++i)ring_[(at+i)&mask]=words[i];
-    *end=(at+RingA6xxPrologueWords)&mask;return kIOReturnSuccess;
+    /* Only the CCU pair on a plain submission (mainline sends exactly those two outside set_pagetable), the whole entry on a
+     * context switch. The caller sized its ring-space reservation with the same condition. */
+    const uint32_t count=reset?RingA6xxPrologueWords:RingA6xxCcuWords;
+    if(n!=count)return poison();
+    for(uint32_t i=0;i<count;++i)ring_[(at+i)&mask]=words[i];
+    *end=(at+count)&mask;return kIOReturnSuccess;
 }
 IOReturn NativeAdrenoRing::emitPrologue(uint32_t at,bool reset,bool table,uint32_t *end)
 {
-    if(generation_==6)return emitA6xxPrologue(at,end);
+    if(generation_==6)return emitA6xxPrologue(at,reset,end);
     const uint32_t mask=(uint32_t)(ring_bytes_/4-1);
     uint32_t words[RingPrologueWords+RingResetWords+RingTableWords+RingStampWords]={0};
     const uint32_t br=RingSyncThreads|RingThreadBr,syncBoth=RingSyncThreads|RingThreadBoth,both=RingThreadBoth,marker=0x101;
@@ -344,13 +358,17 @@ IOReturn NativeAdrenoRing::attach(const NativeAdrenoRingIo *io,const NativeAdren
 /* CP_RB_BASE, CP_RB_CNTL, CP_RB_RPTR_ADDR, WPTR 0 and CP_SCRATCH(2), then the read pointer the CP reports. */
 IOReturn NativeAdrenoRing::program()
 {
-    /* A6xx sets NO_UPDATE (bit 27): without CP_APRIV the CP may not write the RPTR shadow (a6xx_hw_init). A7XX does not need it,
-     * because that ring's prologue keeps the shadow in step by other means. */
-    /* fix63: pipa-gpu-no-no-update=1 clears bit 27, which is what mainline does for an A650
-     * (a6xx_catalog.c has ADRENO_QUIRK_HAS_HW_APRIV for 0x06050002, and a6xx_hw_init only sets
-     * NO_UPDATE when hw_apriv is absent). One round says whether the shadow RPTR is what the CP
-     * is waiting on. */
-    unsigned noUpdate = 1;
+    /* NO_UPDATE (bit 27) is OFF, which is what mainline does on this part. a6xx_hw_init
+     * (reference/repo/linux-mainline/.../a6xx_gpu.c:1452-1456) writes CP_RB_CNTL without the bit when the GPU has
+     * hardware APRIV, and only ORs AXXX_CP_RB_CNTL_NO_UPDATE in when it does not:
+     *     if (adreno_gpu->base.hw_apriv) gpu_write(..., MSM_GPU_RB_CNTL_DEFAULT);
+     *     else                           gpu_write(..., ... | AXXX_CP_RB_CNTL_NO_UPDATE);
+     * This board's A650 carries ADRENO_QUIRK_HAS_HW_APRIV (a6xx_catalog.c, chip id 0x06050002), so it takes the first branch:
+     * the CP writes the RPTR shadow at CP_RB_RPTR_ADDR, and readRptr() above reads exactly that shadow (fence_[0]).
+     * Setting the bit stops the CP writing it, so the shadow stays 0, the ring always looks full, and every submission after
+     * the first returns kIOReturnBusy -- which is what fix122 measured: [gpu wptr] writes=6, CP_RB_RPTR stuck at 0x68,
+     * [swap queue] no-request=131. This used to default to 1; pipa-gpu-no-update=1 restores that for comparison. */
+    unsigned noUpdate = 0;
     PE_parse_boot_argn("pipa-gpu-no-update", &noUpdate, sizeof noUpdate);
     const uint32_t control=(uint32_t)(ilog2(ring_bytes_/8)&0x3f)|(ilog2(RingBlockBytes/8)<<8)|
         (generation_==6 && noUpdate?RingNoUpdate:0);
@@ -495,8 +513,9 @@ IOReturn NativeAdrenoRing::submitWords(const uint32_t *words,size_t word_count,u
     const uint32_t size_words=(uint32_t)(ring_bytes_/4),mask=size_words-1;
     const bool reset=framed && reset_pending_,table=reset && table_pending_;
     /* A plain (kernel) submission cannot carry the switch: a pending table waits for the next framed one. An A6xx core takes
-     * neither a context entry nor a BV fence, so its framed submission costs six prologue words and one plain fence. */
-    const uint32_t extra=generation_==6?RingA6xxPrologueWords+RingFenceWords:
+     * neither a context entry nor a BV fence: a framed submission costs the two CCU invalidates and one plain fence, and only a
+     * context switch adds set_pagetable()'s entry. emitA6xxPrologue writes the same count, so the reservation and the write agree. */
+    const uint32_t extra=generation_==6?(framed?(reset?RingA6xxPrologueWords:RingA6xxCcuWords):0)+RingFenceWords:
         framed?RingPrologueWords+(reset?RingResetWords:0)+(table?RingTableWords:0)+RingFramedFenceWords+(stamps_?2*RingStampWords:0):RingFenceWords;
     if(word_count>size_words-extra-8)return kIOReturnNoResources;
     uint32_t rptr=0;IOReturn status=readRptr(&rptr);

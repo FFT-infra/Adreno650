@@ -198,8 +198,13 @@ IOReturn NativeAdrenoMemory::allocateSystem(size_t bytes,unsigned bits,size_t bu
     if(status==kIOReturnSuccess) {
         system_=true;prepared_=true;bytes_=bytes;write_combined_=write_combined;noteSystem((int64_t)bytes);
         status=descriptor_->getLength()==bytes?takeSegments(descriptor_,bytes,UINT64_C(1)<<bits,false):kIOReturnUnsupported;
-        /* Default-attribute pages may still hold the zero fill in this CPU's cache: written back before the GPU reads them. */
-        if(status==kIOReturnSuccess && !write_combined && !cleaned) {
+        /* Default-attribute pages may still hold the zero fill in this CPU's cache: written back before the GPU reads them.
+         * This applies to a write-combined BO just as much, and more urgently: publishForDevice() returns success without doing
+         * anything while the BO is write-combined, so nothing else ever cleans it. fix126 showed the result -- the self test's
+         * second round allocated a fresh 4 KiB target, read it back as 0 0 0 0, and the GPU had been handed the zero fill still
+         * sitting in the CPU's cache from the allocation. One clean at allocation is enough: the pages are non-cacheable after
+         * it, so the CPU writes that follow go straight to DRAM. */
+        if(status==kIOReturnSuccess && !cleaned) {
             status=maintainImported(0,bytes,NativeAdrenoClean);
             NativeAdrenoNotePhase(NativeAdrenoPhaseAllocate,bytes);
         }
