@@ -88,7 +88,7 @@ class NativeAdrenoRing final {
     /* The one submission path: `number` is the fence this submission issues (the ring's next, or the caller's). */
     IOReturn submitWords(const uint32_t *words,size_t word_count,uint32_t number,bool framed,bool give_wptr,uint32_t *issued);
     IOReturn program();
-    IOReturn emitA6xxPrologue(uint32_t at,uint32_t *end);
+    IOReturn emitA6xxPrologue(uint32_t at,bool reset,uint32_t *end);
 public:
     NativeAdrenoRing()=default;
     /* The core generation this ring drives, 6 or 7 (7 is the default). Only before attach(): the value decides the ring's register

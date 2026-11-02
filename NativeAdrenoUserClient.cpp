@@ -214,7 +214,7 @@ IOReturn NativeAdrenoUserClient::query(NativeAdrenoAbiParams *params)
 /* Per client slot (4, the kernel's own client last): [0] live objects now, [1] their peak, [2] refused BoAllocs, [3] last refusal status,
  * [4] bytes of the last refused request, [5] the window's highest mapped end in MiB above its start. Turnip turns any refusal into
  * VK_ERROR_OUT_OF_DEVICE_MEMORY, which its command streams do not check (int-237: backboardd wrote through a NULL stream pointer). */
-extern "C" {volatile uint32_t native_adreno_client_stats[5][6];}
+extern "C" {volatile uint32_t native_adreno_client_stats[5][8];}
 /* Per client slot: MiB of its own BOs live now and at most (imports not counted). */
 extern "C" {volatile uint32_t native_adreno_client_bytes[5][2];}
 static volatile uint32_t *clientStats(uint32_t slot) {
@@ -447,6 +447,13 @@ IOReturn NativeAdrenoUserClient::submit(const NativeAdrenoAbiSubmit *request,
     submit_->nextRole(task_get_gpu_role(current_task()));
     const IOReturn status=submit_->submit(vm_,buffers,request->buffer_count,
         queue_base_+request->queue,&fence,clock);
+    /* Per client: how much GPU work this process actually submits. Without it, [gpu clients] shows that a process opened the device
+     * but not whether it ever rendered -- which is exactly the question the wallpaper's poster extensions raise (fix125 had
+     * AegirPoster and PosterBoard connected with 16 live objects and w0M). [6] submissions, [7] IB buffers handed over. */
+    if(!status) {
+        volatile uint32_t *cs=clientStats(stats_slot_);
+        cs[6]=cs[6]+1;cs[7]=cs[7]+request->buffer_count;
+    }
     if(status)return status;
     reply->fence=fence;
     return kIOReturnSuccess;
