@@ -234,6 +234,10 @@ IOReturn NativeAdrenoMemory::allocateSystem(size_t bytes,unsigned bits,size_t bu
 extern "C" {volatile uint32_t native_adreno_import_persistent[2];}
 // Imports the persistent path could not wire for writing that a plain import accepted instead.
 extern "C" {volatile uint32_t native_adreno_import_plain_writable;}
+// Frame-sized read-only degradations only: [0] how many, [1] the last address, [2] its length. The scanout
+// and a compositor surface are both about 10 MB, so a match here is what separates them from the small
+// constant buffers that legitimately cannot be wired for writing.
+extern "C" {volatile uint64_t native_adreno_readonly_large[3];}
 /* Imports whose pages were all non-cacheable ([1]: no CPU maintenance for them) or not ([0]). */
 extern "C" {volatile uint32_t native_adreno_pool_stats_uncached[2];}
 static IOMemoryDescriptor *importRange(uint64_t address,size_t bytes,IODirection direction,void *task)
@@ -281,7 +285,7 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
-        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;}
+        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;if(bytes>=(UINT64_C(1)<<20)){native_adreno_readonly_large[0]=native_adreno_readonly_large[0]+1;native_adreno_readonly_large[1]=(uint64_t)address;native_adreno_readonly_large[2]=bytes;}}
     }
 prepared:
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
