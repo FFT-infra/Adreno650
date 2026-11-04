@@ -1,5 +1,4 @@
 /* SPDX-License-Identifier: MIT */
-extern "C" volatile uint64_t native_adreno_readonly_imports = 0;
 
 #include "NativeAdrenoMemory.h"
 extern "C" void native_adreno_close_step_set(uint32_t);
@@ -8,6 +7,9 @@ extern "C" {volatile uint32_t native_adreno_trace_stage;}
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOLib.h>
 #include <kern/task.h>
+
+// Imports that could not be pinned for writing and were mapped read-only (see the fallback below).
+extern "C" volatile uint64_t native_adreno_readonly_imports = 0;
 extern "C" boolean_t PE_parse_boot_argn(const char *,void *,int);
 
 static bool outputWidth(unsigned bits)
