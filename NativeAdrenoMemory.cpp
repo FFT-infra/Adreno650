@@ -1,4 +1,6 @@
 /* SPDX-License-Identifier: MIT */
+extern "C" volatile uint64_t native_adreno_readonly_imports = 0;
+
 #include "NativeAdrenoMemory.h"
 extern "C" void native_adreno_close_step_set(uint32_t);
 /* Where a call that never returns is stuck: the free/unmap/release path stores a stage number here, the board page shows it. */
@@ -261,7 +263,7 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
-        if(status==kIOReturnSuccess)read_only_=true;
+        if(status==kIOReturnSuccess){read_only_=true;++native_adreno_readonly_imports;}
     }
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
     prepared_=true;bytes_=bytes;
