@@ -265,7 +265,7 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
-        if(status==kIOReturnSuccess){read_only_=true;++native_adreno_readonly_imports;}
+        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;}
     }
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
     prepared_=true;bytes_=bytes;
