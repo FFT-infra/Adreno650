@@ -232,6 +232,8 @@ IOReturn NativeAdrenoMemory::allocateSystem(size_t bytes,unsigned bits,size_t bu
  * the import), and the object then lives on until the import completes instead of being torn down under a wired UPL (int-233..235: the render
  * thread stuck in vm_deallocate). A range no memory entry can be made of is imported as before; [0] counts the persistent imports, [1] those. */
 extern "C" {volatile uint32_t native_adreno_import_persistent[2];}
+// Imports the persistent path could not wire for writing that a plain import accepted instead.
+extern "C" {volatile uint32_t native_adreno_import_plain_writable;}
 /* Imports whose pages were all non-cacheable ([1]: no CPU maintenance for them) or not ([0]). */
 extern "C" {volatile uint32_t native_adreno_pool_stats_uncached[2];}
 static IOMemoryDescriptor *importRange(uint64_t address,size_t bytes,IODirection direction,void *task)
@@ -262,14 +264,26 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
     native_adreno_import_stage=15;
     status=imported_->prepare();
     if(status==kNativeAdrenoProtectionFailure) {
+        /* The first import is the persistent one, which references the owner's VM object instead of a wired page list; prepare() can refuse it
+         * for a range the owner is allowed to write, which then looked like read-only memory and cost every GPU write into it. Retry once as a
+         * plain import before deciding the memory really cannot be written. */
+        imported_->release();imported_=nullptr;
+        imported_=IOMemoryDescriptor::withAddressRange(address,bytes,
+            static_cast<IOOptionBits>(kIODirectionInOut)|static_cast<IOOptionBits>(kIOMemoryMapperNone),static_cast<task_t>(task));
+        if(imported_) {
+            native_adreno_import_stage=16;
+            status=imported_->prepare();
+            if(status==kIOReturnSuccess) {native_adreno_import_plain_writable=native_adreno_import_plain_writable+1;goto prepared;}
+            imported_->release();imported_=nullptr;
+        }
         /* Read-only memory of the owner (a mapped file, constant data): cannot be pinned for writing. Pin it for reading only; the GPU then maps it
          * read-only. Metal's no-copy buffers over such memory are only ever read by shaders. */
-        imported_->release();imported_=nullptr;
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
         if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;}
     }
+prepared:
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
     prepared_=true;bytes_=bytes;
     status=kIOReturnUnsupported;
