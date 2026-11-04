@@ -10,6 +10,9 @@ extern "C" {volatile uint32_t native_adreno_trace_stage;}
 
 // Imports that could not be pinned for writing and were mapped read-only (see the fallback below).
 extern "C" volatile uint64_t native_adreno_readonly_imports = 0;
+// The address and length of the last range that had to be imported read-only.
+extern "C" volatile uint64_t native_adreno_readonly_address = 0;
+extern "C" volatile uint64_t native_adreno_readonly_bytes = 0;
 extern "C" boolean_t PE_parse_boot_argn(const char *,void *,int);
 
 static bool outputWidth(unsigned bits)
@@ -265,7 +268,7 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
-        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;}
+        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;}
     }
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
     prepared_=true;bytes_=bytes;
