@@ -13,6 +13,20 @@ extern "C" volatile uint64_t native_adreno_readonly_imports = 0;
 // The address and length of the last range that had to be imported read-only.
 extern "C" volatile uint64_t native_adreno_readonly_address = 0;
 extern "C" volatile uint64_t native_adreno_readonly_bytes = 0;
+// The first physical page of the last range imported read-only. The address above is a virtual one in
+// the calling task, so two different buffers can share it across tasks; the physical page is what the
+// display row can compare against the framebuffer's own physical address (0x9c000000 on this board).
+extern "C" volatile uint64_t native_adreno_readonly_phys = 0;
+// Frame-sized imports, whatever their permission: [0] the count, then three (physical, bytes) pairs
+// newest first. The read-only counter cannot say where a *writable* import's pages are, and that is
+// the question when the GPU reports a completed copy into the framebuffer and the framebuffer does
+// not change: whether the import resolved to the framebuffer's pages at all.
+extern "C" volatile uint64_t native_adreno_large_imports[11] = {};
+// Which process's range had to be imported read-only. The counters above are global, so a boot that
+// degrades one process's surfaces and a boot that degrades a sampler's read-only texture look the
+// same; the name is what tells the two apart.
+extern "C" char native_adreno_readonly_proc[17] = {};
+extern "C" void proc_selfname(char *,int);
 extern "C" boolean_t PE_parse_boot_argn(const char *,void *,int);
 
 static bool outputWidth(unsigned bits)
@@ -285,7 +299,7 @@ IOReturn NativeAdrenoMemory::importTask(void *task,uint64_t address,size_t bytes
         imported_=importRange(address,bytes,kIODirectionOut,task);
         if(!imported_)return kIOReturnNoMemory;
         status=imported_->prepare();
-        if(status==kIOReturnSuccess){read_only_=true;native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;if(bytes>=(UINT64_C(1)<<20)){native_adreno_readonly_large[0]=native_adreno_readonly_large[0]+1;native_adreno_readonly_large[1]=(uint64_t)address;native_adreno_readonly_large[2]=bytes;}}
+        if(status==kIOReturnSuccess){read_only_=true;proc_selfname(native_adreno_readonly_proc,sizeof native_adreno_readonly_proc);native_adreno_readonly_imports=native_adreno_readonly_imports+1;native_adreno_readonly_address=(uint64_t)address;native_adreno_readonly_bytes=bytes;if(bytes>=(UINT64_C(1)<<20)){native_adreno_readonly_large[0]=native_adreno_readonly_large[0]+1;native_adreno_readonly_large[1]=(uint64_t)address;native_adreno_readonly_large[2]=bytes;}}
     }
 prepared:
     if(status!=kIOReturnSuccess) {imported_->release();imported_=nullptr;return status;}
@@ -308,6 +322,21 @@ prepared:
         else spans_[span_count_++]={offset,physical,4096};
     }
     native_adreno_import_stage=19;
+    if(read_only_ && span_count_)native_adreno_readonly_phys=spans_[0].physical;
+    if(span_count_ && bytes>=(UINT64_C(1)<<20)) {
+        volatile uint64_t *ring=native_adreno_large_imports;
+        ring[5]=ring[3];ring[6]=ring[4];
+        ring[3]=ring[1];ring[4]=ring[2];
+        ring[1]=spans_[0].physical;ring[2]=bytes;
+        /* The newest import's second physical page and its run count. A contiguous framebuffer gives one run
+         * starting at 9c000000; more runs, or a second page that is not 9c001000, means the pages the GPU was
+         * given are not the ones the display scans, and the stores land somewhere the CPU never reads. */
+        ring[7]=span_count_;
+        ring[8]=span_count_>1?spans_[1].physical:(spans_[0].physical+4096);
+        ring[9]=(spans_[0].bytes>4096)?spans_[0].physical+4096:ring[8];
+        ring[10]=bytes;
+        ring[0]=ring[0]+1;
+    }
     owner_uncached_=NativeAdrenoPagesUncached(spans_,span_count_);
     native_adreno_pool_stats_uncached[owner_uncached_]=native_adreno_pool_stats_uncached[owner_uncached_]+1;
     native_adreno_bo_memory[7]=native_adreno_bo_memory[7]+(uint32_t)span_count_;

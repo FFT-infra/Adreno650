@@ -3,6 +3,11 @@
 #include "NativeAdrenoMemory.h"   /* NativeAdrenoMaintainPhysicalPages for the physical-page scrub */
 #include "NativeAdrenoVmAlias.h"
 extern "C" volatile uint32_t native_adreno_trace_stage;
+/* The last imported mapping's page-table class as it was actually programmed: permissions, the cache index
+ * (0 = normal non-cacheable, 1 = normal write-back through the context's MAIR) and shareability, plus a
+ * count. An imported buffer that the GPU renders into and whose stores never reach DRAM has to be
+ * explained by these three numbers or by nothing in the driver. */
+extern "C" volatile uint32_t native_adreno_map_attrs[4] = {};
 extern "C" {int (*native_adreno_dram_read32)(uint64_t,uint32_t *);int (*native_adreno_cached_read32)(uint64_t,uint32_t *);
     int (*native_adreno_line_audit)(uint64_t,size_t,uint32_t *,uint32_t *);}
 #include <string.h>
@@ -307,6 +312,12 @@ IOReturn NativeAdrenoVm::map(NativeAdrenoMemory *memory,unsigned upper,uint64_t 
     if(memory && memory->spanCount() && !growScratch(memory->spanCount()))return kIOReturnNoResources;
     const bool exclusive=exclusivePages(memory,cls);
     IOReturn checked=preflight(memory,upper,iova,permissions,writeback,shareability,exclusive);if(checked)return checked;
+    if(memory->imported()) {
+        native_adreno_map_attrs[0]=permissions;
+        native_adreno_map_attrs[1]=writeback;
+        native_adreno_map_attrs[2]=shareability;
+        native_adreno_map_attrs[3]=native_adreno_map_attrs[3]+1;
+    }
     if(next_handle_==UINT64_MAX)return kIOReturnNoResources;
     clock.lap(0,5); /* Previously omitted preflight; map slot 5 was unused. */
     ArmSmmu4KStatus status=observeCheap();if(status)return fail(status);
@@ -538,6 +549,27 @@ static bool dramWord(const NativeAdrenoMemory &memory,size_t offset,uint32_t *va
         if(offset>=span.offset && offset-span.offset<span.bytes)return !native_adreno_dram_read32(span.physical+(offset-span.offset),value);
     }
     return false;
+}
+IOReturn NativeAdrenoVm::physicalFor(uint64_t iova,uint64_t *physical,size_t *remaining,bool *kernelMapping) const
+{
+    if(!physical || !remaining || !kernelMapping)return kIOReturnBadArgument;
+    *physical=0;*remaining=0;*kernelMapping=false;
+    if(!attached_ || poisoned_)return kIOReturnNotReady;
+    for(size_t i=0;i<high_;++i) {
+        const Mapping &m=mappings_[i];
+        if(!m.memory || iova<m.iova || iova-m.iova>=m.memory->bytes())continue;
+        const uint64_t offset=iova-m.iova;
+        for(size_t j=0;j<m.memory->spanCount();++j) {
+            const auto &span=m.memory->spans()[j];
+            if(offset<span.offset || offset-span.offset>=span.bytes)continue;
+            *physical=span.physical+(offset-span.offset);
+            *remaining=span.bytes-(offset-span.offset);
+            *kernelMapping=m.memory->mapping()!=nullptr;
+            return kIOReturnSuccess;
+        }
+        return kIOReturnIOError;
+    }
+    return kIOReturnBadArgument;
 }
 IOReturn NativeAdrenoVm::peekWords(uint64_t iova,uint32_t *out,size_t count) const
 {

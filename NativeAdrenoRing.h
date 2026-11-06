@@ -95,6 +95,12 @@ public:
     /* The core generation this ring drives, 6 or 7 (7 is the default). Only before attach(): the value decides the ring's register
      * programming and the form of every submission, so it cannot change under a running ring. */
     IOReturn setGeneration(unsigned generation);
+    /* A raw register read for the hang report: what the CP's pointers and status were at the moment it stopped, and what the
+     * command processor was executing. Zero when the ring has no register access or the read fails, which reads as "no data". */
+    uint32_t peek(uint32_t reg) const {uint32_t value=0;return io_.read32 && io_.read32(io_.cookie,reg,&value)==0?value:0u;}
+    /* The ring's own words, for the stall report: the packets the CP has not consumed yet, read from the read pointer. */
+    const volatile uint32_t *ringWords() const {return ring_;}
+    size_t ringSize() const {return ring_bytes_;}
     unsigned generation() const {return generation_;}
     ~NativeAdrenoRing()=default;
     NativeAdrenoRing(const NativeAdrenoRing &)=delete;

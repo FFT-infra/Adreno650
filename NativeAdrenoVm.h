@@ -142,6 +142,8 @@ public:
     IOReturn describe(uint64_t handle,uint64_t *iova,size_t *bytes,unsigned *permissions) const;
     /* Up to `count` dwords of a mapped kernel-owned BO at a GPU address (through the kernel's own mapping), for the board log. */
     IOReturn peekWords(uint64_t iova,uint32_t *out,size_t count) const;
+    /* BO span lookup only; no page-table walk or cache maintenance. */
+    IOReturn physicalFor(uint64_t iova,uint64_t *physical,size_t *remaining,bool *kernelMapping) const;
     /* Replace any CP_WAIT_FOR_IDLE (type 7, opcode 0x26, no payload) in [iova, iova+bytes) with a
      * CP_NOP of the same size. On this board that packet is what stops the CP: a 52-byte self-test IB
      * with it as the first packet times out (GPUROW23 rounds -1 -1), and the same IB without it passes

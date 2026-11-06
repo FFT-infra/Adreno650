@@ -135,8 +135,10 @@ struct NativeAdrenoClientRecord native_adreno_client_log[16];  /* see native_adr
 struct NativeAdrenoClientText {char name[20]; char text[64];};
 struct NativeAdrenoClientText native_adreno_client_text[8];
 extern "C" {volatile uint32_t native_adreno_metal_marks[17];}
-/* Why the latest mount of a connection failed: [0] 1 no address space, 2 the core's open, 3 the window scope; [1] its IOReturn; [2] the queue base; [3] failures so far. */
-volatile uint32_t native_adreno_mount_fail[4];
+/* Why the latest mount of a connection failed: [0] 1 no address space, 2 the core's open, 3 the window scope; [1] its IOReturn; [2] the queue base; [3] failures so far.
+ * The core's open refuses with kIOReturnBadArgument for a null or poisoned vm/submit/ring and for an ABI or bit-width mismatch, and the return code alone does not
+ * say which: [4] vm poisoned (9 = no vm), [5] submit poisoned (9 = no submit), [6] ring poisoned (9 = no ring), [7] input bits, [8] output bits, [9] ABI version. */
+volatile uint32_t native_adreno_mount_fail[12];
 /* Processes that read MetalPluginName (the Metal discovery), first twelve names, with counts. */
 struct NativeAdrenoAskerRecord {char name[20]; uint32_t reads;};
 struct NativeAdrenoAskerRecord native_adreno_metal_askers[12];
@@ -344,6 +346,17 @@ static NativeAdrenoClientRecord *clientRecord(const char *name)
 bool AGXDeviceUserClient::mount(bool kernel)
 {
     proc_selfname(name_,sizeof name_);
+    /* The desktop has only ever come up in boots where the client open failed: on 2026-11-05 ok1 and hh19312 both read
+     * SpringBoard no-device and the compositor fell back to software, while every boot that handed out a device stayed on the
+     * boot frame (nn20481, nn20532, nn20583). That state is otherwise a side effect of a poisoned submit, i.e. luck. This switch
+     * asks for it: sheng-gpu-clients=<n> lets the first n clients in and refuses the rest. Absent, everything is let in. */
+    static int allowFirst=-1;
+    if(allowFirst<0) {int v=1000000;PE_parse_boot_argn("sheng-gpu-clients",&v,sizeof v);allowFirst=v;}
+    static int mounted=0;
+    if(!kernel && mounted>=allowFirst) {
+        native_adreno_mount_fail[0]=3;native_adreno_mount_fail[1]=uint32_t(kIOReturnBadArgument);
+        native_adreno_mount_fail[3]=native_adreno_mount_fail[3]+1;return false;
+    }
     NativeAdrenoUserClient *core=new NativeAdrenoUserClient;
     if(!core)return false;
     IOLockLock(g.lock);
@@ -356,8 +369,13 @@ bool AGXDeviceUserClient::mount(bool kernel)
     NativeAdrenoVm *vm=kernel?g.vm:space?space->vm():nullptr;
     if(!opened && !vm)opened=kIOReturnNotReady;
     if(!opened)opened=core->open(NativeAdrenoAbiVersion,vm,g.submit,g.ring,g.input_bits,g.output_bits);
-    if(opened!=kIOReturnSuccess) {native_adreno_mount_fail[0]=space?2:1;native_adreno_mount_fail[1]=uint32_t(opened);native_adreno_mount_fail[2]=0;native_adreno_mount_fail[3]=native_adreno_mount_fail[3]+1;}
+    if(opened!=kIOReturnSuccess) {native_adreno_mount_fail[0]=space?2:1;native_adreno_mount_fail[1]=uint32_t(opened);native_adreno_mount_fail[2]=0;native_adreno_mount_fail[3]=native_adreno_mount_fail[3]+1;
+        native_adreno_mount_fail[4]=vm?(vm->poisoned()?1:0):9;
+        native_adreno_mount_fail[5]=g.submit?(g.submit->poisoned()?1:0):9;
+        native_adreno_mount_fail[6]=g.ring?(g.ring->poisoned()?1:0):9;
+        native_adreno_mount_fail[7]=g.input_bits;native_adreno_mount_fail[8]=g.output_bits;native_adreno_mount_fail[9]=NativeAdrenoAbiVersion;}
     if(opened==kIOReturnSuccess) {
+        if(!kernel)++mounted;
         if(g.timer)core->attachTimer(g.timer);
         if(g.info)core->attachDeviceInfo(g.info);
         core->attachStatus(&g.status);
@@ -740,6 +758,47 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
     native_adreno_metal_diag.last_status=uint32_t(status);
     return status;
 }
+// Private, opt-in boundary records. Rows are immutable after count publication.
+extern "C" {volatile uint64_t *native_adreno_boundary_log=nullptr;
+volatile uint32_t native_adreno_boundary_count=0,native_adreno_boundary_lost=0;}
+static const uint32_t kBoundaryNote=0x50495831;
+static IOReturn boundaryRecord(NativeAdrenoVm *vm,const NativeAdrenoAbiNote &note)
+{
+    if(note.count!=30 || note.words[9]>16 || note.words[1]<1 || note.words[1]>5)return kIOReturnBadArgument;
+    if(!native_adreno_boundary_log) {
+        native_adreno_boundary_log=static_cast<volatile uint64_t *>(IOMallocZero(128*64*sizeof(uint64_t)));
+        if(!native_adreno_boundary_log)return kIOReturnNoMemory;
+    }
+    const uint32_t n=native_adreno_boundary_count;
+    if(n>=128) {native_adreno_boundary_lost=native_adreno_boundary_lost+1;return kIOReturnNoResources;}
+    volatile uint64_t *r=native_adreno_boundary_log+n*64;
+    r[0]=note.words[1];r[1]=note.words[0];r[2]=uint32_t(proc_selfpid());r[3]=note.words[2];
+    r[4]=uint64_t(note.words[4])|(uint64_t(note.words[5])<<32);
+    r[5]=uint64_t(note.words[6])|(uint64_t(note.words[7])<<32);r[6]=note.words[8];
+    r[9]=kIOReturnNotReady;r[11]=note.words[9];r[12]=vm?vm->ttbr0():0;
+    r[13]=g.submit && g.submit->tableVm()?g.submit->tableVm()->ttbr0():0;
+    r[14]=uint64_t(note.words[10])|(uint64_t(note.words[11])<<32);
+    for(unsigned k=0;k<16;++k) {r[16+k]=k<note.words[9]?note.words[12+k]:~0u;r[32+k]=~0u;}
+    if(note.words[9])r[8]=r[8]|4;
+    if(vm && r[5] && note.words[8]) {
+        uint64_t physical=0;size_t remaining=0;bool kernelMapping=false;
+        const IOReturn status=vm->physicalFor(r[5],&physical,&remaining,&kernelMapping);
+        r[9]=uint32_t(status);
+        if(!status) {
+            r[7]=physical;r[8]=r[8]|1;if(kernelMapping)r[8]=r[8]|2;
+            const unsigned words=note.words[8]/4<16?note.words[8]/4:16;
+            for(unsigned k=0;k<words;++k) {
+                uint64_t pa=0;size_t reach=0;bool mapped=false;uint32_t value=~0u;
+                if(!vm->physicalFor(r[5]+4*k,&pa,&reach,&mapped) && reach>=4 &&
+                   native_adreno_dram_read32 && !native_adreno_dram_read32(pa,&value)) {
+                    r[32+k]=value;r[10]=r[10]|(1u<<k);
+                }
+            }
+        }
+    }
+    __atomic_store_n(&native_adreno_boundary_count,n+1,__ATOMIC_RELEASE);
+    return kIOReturnSuccess;
+}
 IOReturn AGXDeviceUserClient::run(uint32_t method,const void *input,size_t input_size,void *output,size_t output_size)
 {
     uint64_t lockClock[LockClockWords]={};
@@ -820,6 +879,13 @@ IOReturn AGXDeviceUserClient::runTimed(uint32_t method,const void *input,size_t 
         if(!input || input_size!=sizeof(NativeAdrenoAbiNote) || output_size)return kIOReturnBadArgument;
         NativeAdrenoAbiNote note{};
         memcpy(&note,input,sizeof(note));
+        if(note.kind==kBoundaryNote) {
+            unsigned on=0;PE_parse_boot_argn("alioth-pixel-check",&on,sizeof on);
+            if(!on || strncmp(name_,"backboardd",sizeof name_))return kIOReturnUnsupported;
+            lockTimed(lockWait);
+            const IOReturn status=live_ && space_?boundaryRecord(space_->vm(),note):kIOReturnNotReady;
+            unlockTimed(lockWait);return status;
+        }
         if((note.kind!=NativeAdrenoNotePass && note.kind!=NativeAdrenoNotePipeline) || note.count>NativeAdrenoNoteWords)return kIOReturnBadArgument;
         const bool pass=note.kind==NativeAdrenoNotePass;
         volatile uint32_t *count=pass?&native_adreno_pass_count:&native_adreno_pipe_count;
@@ -1223,6 +1289,19 @@ extern "C" bool native_adreno_fences_detail(uint32_t *submitted,uint32_t *retire
 extern "C" bool native_adreno_fences(uint32_t *submitted,uint32_t *retired)
 {
     return native_adreno_fences_detail(submitted,retired,nullptr);
+}
+/* The SMMU context bank's fault status (FSR, FAR low/high, FSYNR0) for the table the GPU is running on.
+ * This board configures stall_on_fault=0 with continue_after_fault=1 and registers no fault interrupt, so a
+ * refused store is dropped and latched here with nobody told: a GPU copy that reports completion while the
+ * destination memory never changes looks identical to a copy whose source was empty. */
+extern "C" bool native_adreno_fault_read(uint32_t *out)
+{
+    if(!out)return false;
+    for(unsigned i=0;i<4;++i)out[i]=0;
+    if(!g.published || !g.submit)return false;
+    NativeAdrenoVm *vm=g.submit->tableVm();
+    if(!vm)return false;
+    return vm->faultState(out)==kIOReturnSuccess;
 }
 /* Publishes the service once. Everything passed in must outlive the system (the board probe keeps them in statics) and
  * the VM, submit object and ring must already be attached to the live GPU context. The core must not be open. */

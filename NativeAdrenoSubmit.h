@@ -134,6 +134,15 @@ private:
     NativeAdrenoSubmitStats stats_{};
     void noteStall(uint32_t observed,const NativeAdrenoRingClock *clock);   /* the CP's state for a fence that stopped advancing (native_adreno_stall) */
     bool attached_=false,poisoned_=false;
+    /* Set while recover() replays. The jobs it has not resubmitted yet still carry active=true from before the restart, so waitAll
+     * finds them and waits on a fence the GPU will never write: that is why every replay ended at its first useVm (rp=0 in every
+     * boot on 2026-11-05). During a replay the only work on the GPU is what this loop has already submitted, so the drain waits for
+     * that fence and for nothing else. */
+    bool replaying_=false;
+    uint32_t replay_fence_=0;
+    /* The read pointer seen on the previous submission and how many submissions in a row have found it unmoved while the write
+     * pointer moved on. Three in a row is a CP that has stopped, not a pointer that was read mid-update. */
+    uint32_t last_rptr_=0,stalled_seen_=0;
     uint32_t audit_tick_=0;   /* submissions since attach; every eighth one audits its IB lines */
     /* submit()'s distinct buffers and ring words: too large for the kernel stack at 128 IBs (callers serialize every method) */
     uint64_t scratch_handles_[NativeAdrenoSubmitMaxBuffers]{};
@@ -204,6 +213,10 @@ public:
     /* Before a VM is freed: waits for every job, and when the GPU's table is that VM's, installs the default table from the CPU. */
     IOReturn forgetVm(NativeAdrenoVm *,const NativeAdrenoRingClock *,uint32_t timeout_us);
     NativeAdrenoVm *defaultVm() const {return vm_;}
+    /* The VM whose page table the GPU runs after the queued work: the context a fault from that work is
+     * latched in (CB_FSR is per bank). The display row reads its fault state to tell "the store was
+     * refused" from "the store went elsewhere", which look identical from the CPU side. */
+    NativeAdrenoVm *tableVm() const {return table_vm_;}
     bool queueOutstanding(uint64_t queue) const;
     /* Queues [first, first+count): whether any of their jobs is outstanding, and a wait for every one of them (oldest first) that
      * leaves other queues' jobs alone. Each client of the shared ring owns one such range. */
