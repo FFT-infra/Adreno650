@@ -139,6 +139,10 @@ extern "C" {volatile uint32_t native_adreno_metal_marks[17];}
  * The core's open refuses with kIOReturnBadArgument for a null or poisoned vm/submit/ring and for an ABI or bit-width mismatch, and the return code alone does not
  * say which: [4] vm poisoned (9 = no vm), [5] submit poisoned (9 = no submit), [6] ring poisoned (9 = no ring), [7] input bits, [8] output bits, [9] ABI version. */
 volatile uint32_t native_adreno_mount_fail[12];
+/* The queue-range index the next user connection will be given, i.e. how many 4 GiB ranges this boot has handed out
+ * (NativeAdrenoQueueRange). It only advances on a successful mount, so a client whose range never drains blocks that
+ * index for the rest of the boot: the row reads this against the VM counters to say whether that is what happened. */
+volatile uint32_t native_adreno_next_client;
 /* Processes that read MetalPluginName (the Metal discovery), first twelve names, with counts. */
 struct NativeAdrenoAskerRecord {char name[20]; uint32_t reads;};
 struct NativeAdrenoAskerRecord native_adreno_metal_askers[12];
@@ -388,7 +392,7 @@ bool AGXDeviceUserClient::mount(bool kernel)
             scoped=!g.next_client || !window?kIOReturnNoResources:core->setScope(base,GpuClientVaStart,window);
         } else scoped=core->setScope(0,0,0);
         if(scoped==kIOReturnSuccess) {
-            if(!kernel)++g.next_client;
+            if(!kernel) {++g.next_client;native_adreno_next_client=g.next_client;}
             unsigned row=4;
             if(server && !g.rows[0])row=0;
             for(unsigned i=1;!server && row==4 && i<4;++i)if(!g.rows[i])row=i;
