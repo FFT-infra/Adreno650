@@ -11,9 +11,8 @@ struct NativeAdrenoKernelTime {
     static int wait_us(void *,unsigned);
     /* A wait that reads the timebase in a loop instead of blocking on a timer deadline.
      * IODelay and IOSleep are both delay_for_interval(), which asserts its wakeup on the CURRENT
-     * core's timer queue (osfmk/kern/clock.c:1605); a core that has stopped taking its timer
-     * interrupt never wakes the caller, and the bring-up that waits for a clock or a fence stops
-     * for good. Every short wait in this driver goes through here. */
+     * core's timer queue (osfmk/kern/clock.c:1605). Timebase spins need no timer interrupt;
+     * they are used only for this driver's bounded short waits, not as a boot-stall fix. */
     static void spin_us(unsigned);
 };
 #endif
