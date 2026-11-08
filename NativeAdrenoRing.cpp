@@ -2,6 +2,7 @@
 #include "NativeAdrenoRing.h"
 #include "AdrenoPM4.h"
 #include "NativeAdrenoPreempt.h"
+#include "NativeAdrenoSpin.h"
 #include <IOKit/IOLib.h>
 #include <pexpert/pexpert.h>
 
@@ -599,7 +600,7 @@ IOReturn NativeAdrenoRing::idle(const NativeAdrenoRingClock *clock,uint32_t time
             if(!(status&GpuBusyIgnAhb))return kIOReturnSuccess;
         }
         if(clock->now_us(clock->cookie)-start>=timeout_us)return kIOReturnTimeout;
-        IODelay(10);
+        native_adreno_spin_us(10);
     }
 }
 IOReturn NativeAdrenoRing::progressState(uint32_t out[6])

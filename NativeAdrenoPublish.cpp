@@ -12,6 +12,7 @@
  * allow IOServiceOpen for that user-client class name, and nothing else in this system can create one (the Apple AGX kext is
  * never loaded without an Apple GPU), so the name only decides whether the Adreno Metal plugin may open its own driver. */
 #include <IOKit/IOLib.h>
+#include "NativeAdrenoSpin.h"
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOService.h>
@@ -687,7 +688,7 @@ static IOReturn runCore(AGXDeviceUserClient *connection,uint32_t method,const vo
              * the self-test's WaitFence cost 3 us against a 2 s request ([gpu methods] 6:2/1/3us),
              * and its "fence never completed" was this break, not the GPU. Wait the pause out
              * instead; the deadline is still the caller's. */
-            if(!g.clock.idle) {delay_for_interval(100,NSEC_PER_USEC);continue;}
+            if(!g.clock.idle) {native_adreno_spin_us(100);continue;}
             if(g.clock.idle(g.clock.cookie)) {
                 if(!polled) {
                     lockTimed(lockWait);

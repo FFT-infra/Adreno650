@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "NativeAdrenoKernelTime.h"
 #include <IOKit/IOLib.h>
+#include "NativeAdrenoSpin.h"
 #include <kern/clock.h>
 int NativeAdrenoKernelTime::now_us(void *cookie,uint64_t *value)
 {
@@ -10,9 +11,13 @@ int NativeAdrenoKernelTime::now_us(void *cookie,uint64_t *value)
     *value=nanoseconds/1000;
     return 0;
 }
+void NativeAdrenoKernelTime::spin_us(unsigned microseconds)
+{
+    native_adreno_spin_us(microseconds);
+}
 int NativeAdrenoKernelTime::wait_us(void *cookie,unsigned microseconds)
 {
     if(cookie)return 1;
-    IODelay(microseconds);
+    spin_us(microseconds);
     return 0;
 }
