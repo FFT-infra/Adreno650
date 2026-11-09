@@ -609,6 +609,9 @@ IOReturn AGXDeviceUserClient::clientMemoryForType(UInt32 type,IOOptionBits *opti
 /* Fence waits as the callers see them (int-147; method 6's own statistics count every poll): [0] waits, [1] us waited in total, [2] pauses
  * taken outside the connection lock, [3] the longest wait in us, [4] polls answered without the lock. */
 extern "C" {volatile uint64_t native_adreno_wait_outer[5];}
+/* Frames the client completed with a non-zero status: [0] count, [1..4] the first four distinct
+ * statuses in the order they were seen, [5] the most recent one. */
+extern "C" {volatile uint64_t native_adreno_handoff_fail[6];}
 static void lockTimed(uint64_t *clock)
 {
     if(!clock) {IOLockLock(g.lock);return;}
@@ -850,8 +853,26 @@ IOReturn AGXDeviceUserClient::runTimed(uint32_t method,const void *input,size_t 
         return kIOReturnSuccess;
     }
 
-    if(method>=NativeAdrenoHandoffBase && method<=NativeAdrenoHandoffLast)
-        return native_gop_handoff_call(method-NativeAdrenoHandoffBase,current_task(),input,input_size,output,output_size);
+    if(method>=NativeAdrenoHandoffBase && method<=NativeAdrenoHandoffLast) {
+        const uint32_t op=method-NativeAdrenoHandoffBase;
+        IOReturn handoff=native_gop_handoff_call(op,current_task(),input,input_size,output,output_size);
+        /* The display driver counts a frame the client completes with a non-zero status as a
+         * failure but keeps only the count. A desktop whose every frame fails therefore cannot say
+         * why. Keep the first four distinct statuses; the console row reads this array. */
+        if(op==3 && input && input_size>=12 && !output_size) {
+            uint32_t reported=0;
+            memcpy(&reported,static_cast<const uint8_t *>(input)+8,4);
+            if(reported) {
+                static uint32_t seen[4];static unsigned distinct;
+                bool known=false;
+                for(unsigned i=0;i<distinct;i++)if(seen[i]==reported)known=true;
+                if(!known && distinct<4){seen[distinct++]=reported;native_adreno_handoff_fail[distinct]=reported;}
+                native_adreno_handoff_fail[0]=native_adreno_handoff_fail[0]+1;
+                native_adreno_handoff_fail[5]=reported;
+            }
+        }
+        return handoff;
+    }
     if(method==NativeAdrenoExportMethod) {
         struct Piece {uint32_t generation,total,offset,bytes;};
         char caller[20]={};proc_selfname(caller,sizeof caller);
